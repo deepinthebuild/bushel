@@ -6,8 +6,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"strconv"
-	"strings"
 
 	repb "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
 	semver "github.com/bazelbuild/remote-apis/build/bazel/semver"
@@ -243,45 +241,7 @@ func (s *Server) BatchReadBlobs(ctx context.Context, req *repb.BatchReadBlobsReq
 }
 
 func (s *Server) resource(name string, write bool) (cas.Digest, error) {
-	bad := status.Error(codes.InvalidArgument, "invalid ByteStream resource name")
-	if len(name) > 4096 {
-		return cas.Digest{}, bad
-	}
-	prefix := ""
-	if s.instance != "" {
-		prefix = s.instance + "/"
-	}
-	if !strings.HasPrefix(name, prefix) {
-		return cas.Digest{}, bad
-	}
-	parts := strings.Split(strings.TrimPrefix(name, prefix), "/")
-	for _, part := range parts {
-		if part == "" || part == "." || part == ".." || strings.ContainsAny(part, "\\\x00\r\n") {
-			return cas.Digest{}, bad
-		}
-	}
-	if write {
-		if len(parts) < 5 || parts[0] != "uploads" {
-			return cas.Digest{}, bad
-		}
-		parts = parts[2:]
-	}
-	if len(parts) < 3 || parts[0] != "blobs" {
-		return cas.Digest{}, bad
-	}
-	parts = parts[1:]
-	if parts[0] == "sha256" {
-		parts = parts[1:]
-	}
-	if len(parts) < 2 || (!write && len(parts) != 2) {
-		return cas.Digest{}, bad
-	}
-	size, err := strconv.ParseInt(parts[1], 10, 64)
-	if err != nil || strconv.FormatInt(size, 10) != parts[1] {
-		return cas.Digest{}, bad
-	}
-	d, err := cas.ParseDigest(parts[0], size)
-	return d, rpcError(err)
+	return parseResource(s.instance, name, write)
 }
 
 func (s *Server) Read(req *bspb.ReadRequest, stream bspb.ByteStream_ReadServer) error {
@@ -357,7 +317,8 @@ func (s *Server) Write(stream bspb.ByteStream_WriteServer) error {
 			}
 		}
 	}()
-	r := &uploadReader{ctx: stream.Context(), requests: requests, committed: committed, name: first.ResourceName, current: first, size: d.Size}
+	r := &uploadReader{ctx: stream.Context(), requests: requests, committed: committed, current: first,
+		state: uploadState{resource: first.ResourceName, size: d.Size}}
 	if err := s.store.Put(stream.Context(), d, r); err != nil {
 		if errors.Is(err, errCommitted) {
 			return stream.SendAndClose(&bspb.WriteResponse{CommittedSize: d.Size})
@@ -374,14 +335,12 @@ func (s *Server) Write(stream bspb.ByteStream_WriteServer) error {
 }
 
 type uploadReader struct {
-	ctx          context.Context
-	requests     <-chan uploadMessage
-	committed    <-chan struct{}
-	name         string
-	current      *bspb.WriteRequest
-	offset, size int64
-	data         []byte
-	finished     bool
+	ctx       context.Context
+	requests  <-chan uploadMessage
+	committed <-chan struct{}
+	current   *bspb.WriteRequest
+	state     uploadState
+	data      []byte
 }
 
 var errCommitted = errors.New("blob completed by another writer")
@@ -393,7 +352,7 @@ type uploadMessage struct {
 
 func (r *uploadReader) Read(p []byte) (int, error) {
 	for len(r.data) == 0 {
-		if r.finished {
+		if r.state.finished {
 			return 0, io.EOF
 		}
 		req := r.current
@@ -415,18 +374,13 @@ func (r *uploadReader) Read(p []byte) (int, error) {
 				return 0, err
 			}
 		}
-		if (req.ResourceName != "" && req.ResourceName != r.name) || req.WriteOffset != r.offset {
-			return 0, status.Error(codes.InvalidArgument, "upload resource or offset changed")
+		next, err := advanceUpload(r.state, uploadPart{resource: req.ResourceName, offset: req.WriteOffset,
+			dataSize: int64(len(req.Data)), finish: req.FinishWrite})
+		if err != nil {
+			return 0, status.Error(codes.InvalidArgument, err.Error())
 		}
-		if int64(len(req.Data)) > r.size-r.offset {
-			return 0, status.Error(codes.InvalidArgument, "upload exceeds declared size")
-		}
-		r.offset += int64(len(req.Data))
+		r.state = next
 		r.data = req.Data
-		r.finished = req.FinishWrite
-		if r.finished && r.offset != r.size {
-			return 0, status.Error(codes.InvalidArgument, "premature finish_write")
-		}
 	}
 	n := copy(p, r.data)
 	r.data = r.data[n:]
