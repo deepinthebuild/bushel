@@ -21,8 +21,8 @@ was 1214 MB/s for SHA-256 and 1398 MB/s for BLAKE3 (about 15% faster).
 BLAKE3 wins on typical chunks by about 30%; tiny-blob results do not drive this
 decision. We accept the measured throughput cost of SHA-256 for one identity
 scheme compatible with the
-usual Bazel and IPFS path, standard-library acceleration, and no extra runtime
-hashing dependency. Supporting a second digest would multiply identities and
+usual Bazel and IPFS path, standard-library acceleration, and no direct Bushel
+BLAKE3 dependency. Supporting a second digest would multiply identities and
 reduce deduplication unless every participant agreed on it.
 
 Reproduce from the checkout root:
@@ -32,6 +32,7 @@ go -C benchmarks/digests test -run '^$' -bench . -benchmem -benchtime=300ms -cou
 go test ./internal/cas -run '^$' -bench BenchmarkChunk -benchmem
 ```
 
-The comparison lives in a separate module, so BLAKE3 is not a daemon dependency.
+The comparison lives in a separate module. IPFS libraries may still include
+BLAKE3 transitively; Bushel's identities and verification use only SHA-256.
 References: [REAPI digest functions](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto),
 [BLAKE3 Go implementation](https://github.com/zeebo/blake3).

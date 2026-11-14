@@ -294,3 +294,22 @@ func BenchmarkCommittedPresence(b *testing.B) {
 		}
 	}
 }
+
+func TestStoreRefusesUnownedDirectory(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tmp", "keep")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if s, err := NewStore(dir, 1<<20); err == nil {
+		s.Close()
+		t.Fatal("accepted nonempty unowned directory")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "keep" {
+		t.Fatalf("existing files changed: %v", err)
+	}
+}

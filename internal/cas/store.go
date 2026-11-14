@@ -51,6 +51,24 @@ func NewStore(root string, limit int64) (_ *Store, err error) {
 			_ = s.lock.Unlock()
 		}
 	}()
+	const format = "bushel-cas-v1\n"
+	marker, markerErr := readBounded(filepath.Join(root, "format"), 32)
+	if errors.Is(markerErr, ErrNotFound) {
+		entries, e := os.ReadDir(root)
+		if e != nil {
+			return nil, e
+		}
+		for _, entry := range entries {
+			if entry.Name() != "store.lock" {
+				return nil, fmt.Errorf("%w: state directory is not an empty Bushel store", ErrInvalid)
+			}
+		}
+		if e := writeSynced(filepath.Join(root, "format"), []byte(format)); e != nil {
+			return nil, e
+		}
+	} else if markerErr != nil || string(marker) != format {
+		return nil, fmt.Errorf("%w: unrecognized store format", ErrInvalid)
+	}
 	// The process lock makes stale staging directories safe to remove on restart.
 	if err = os.RemoveAll(filepath.Join(root, "tmp")); err != nil {
 		return nil, err

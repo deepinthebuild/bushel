@@ -73,7 +73,10 @@ func (n *Node) initDiscovery(cfg Config) error {
 	if len(bootstrap) == 0 {
 		bootstrap = dht.GetDefaultBootstrapPeerAddrInfos()
 	}
-	router, err := dht.New(n.discovery, dht.Mode(dht.ModeClient), dht.DisableValues(), dht.DisableAutoRefresh(),
+	// The public /ipfs DHT requires its default value support and validators,
+	// even in client mode. Bushel exposes only rendezvous provider operations
+	// through rendezvousRouter and serves no inbound DHT requests.
+	router, err := dht.New(n.discovery, dht.Mode(dht.ModeClient), dht.DisableAutoRefresh(),
 		dht.BootstrapPeers(bootstrap...), dht.QueryFilter(dht.PublicQueryFilter), dht.RoutingTableFilter(dht.PublicRoutingTableFilter),
 		dht.AddressFilter(publicAddresses))
 	if err != nil {

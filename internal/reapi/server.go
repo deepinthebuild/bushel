@@ -56,7 +56,7 @@ func (s *Server) GRPC() *grpc.Server {
 			return status.Error(codes.ResourceExhausted, "too many active RPCs")
 		}
 	}
-	g := grpc.NewServer(grpc.MaxRecvMsgSize(MaxBatchBytes+(256<<10)), grpc.MaxSendMsgSize(MaxBatchBytes+(256<<10)), grpc.MaxConcurrentStreams(32),
+	g := grpc.NewServer(grpc.WaitForHandlers(true), grpc.MaxRecvMsgSize(MaxBatchBytes+(256<<10)), grpc.MaxSendMsgSize(MaxBatchBytes+(256<<10)), grpc.MaxConcurrentStreams(32),
 		grpc.UnaryInterceptor(func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 			if err := enter(ctx); err != nil {
 				return nil, err

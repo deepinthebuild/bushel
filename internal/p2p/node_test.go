@@ -21,6 +21,7 @@ import (
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	"github.com/libp2p/go-libp2p"
+	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -394,6 +395,63 @@ func (r *recordedRendezvous) FindProvidersAsync(_ context.Context, key cid.Cid, 
 	return ch
 }
 func (*recordedRendezvous) Close() error { return nil }
+
+func TestDiscoveryStartupWithLocalBootstrap(t *testing.T) {
+	ctx := testContext(t)
+	bootstrap, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"), libp2p.DisableRelay())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bootstrap.Close()
+	// Empty bootstrap peers keep the fixture entirely offline. Use the real
+	// public DHT protocol so its configuration validation is exercised.
+	bootstrapDHT, err := dht.New(bootstrap, dht.Mode(dht.ModeServer), dht.DisableAutoRefresh(), dht.BootstrapPeers())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bootstrapDHT.Close()
+	connected := make(chan peer.ID, 1)
+	bootstrap.Network().Notify(&network.NotifyBundle{ConnectedF: func(_ network.Network, c network.Conn) {
+		select {
+		case connected <- c.RemotePeer():
+		default:
+		}
+	}})
+	store, err := cas.NewStore(t.TempDir(), 64<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	key, _, err := crypto.GenerateEd25519Key(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := New(ctx, Config{Store: store, PrivateKey: key, Discovery: true,
+		Listen: []string{"/ip4/127.0.0.1/tcp/0"}, RequestTimeout: 2 * time.Second,
+		Bootstrap: []peer.AddrInfo{{ID: bootstrap.ID(), Addrs: bootstrap.Addrs()}}})
+	if err != nil {
+		t.Fatalf("discovery startup: %v", err)
+	}
+	defer n.Close()
+	router, ok := n.router.(*dht.IpfsDHT)
+	if !ok || router.Mode() != dht.ModeClient {
+		t.Fatal("discovery did not initialize a real DHT client")
+	}
+	if slices.Contains(n.discovery.Mux().Protocols(), "/ipfs/kad/1.0.0") {
+		t.Fatal("discovery client serves inbound DHT requests")
+	}
+	select {
+	case id := <-connected:
+		if id != n.ID() {
+			t.Fatal("bootstrap connected to an unexpected identity")
+		}
+	case <-ctx.Done():
+		t.Fatal("discovery did not connect to its configured bootstrap")
+	}
+	if n.host.Network().Connectedness(bootstrap.ID()) != network.NotConnected {
+		t.Fatal("bootstrap peer entered content host")
+	}
+}
 
 func TestDiscoveryBridgeAndBootstrapIsolation(t *testing.T) {
 	source, sourceStore := testNode(t)
