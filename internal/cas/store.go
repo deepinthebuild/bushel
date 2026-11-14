@@ -28,6 +28,7 @@ type Store struct {
 	used, reserved, limit int64
 	readReserved          int64
 	operations            chan struct{}
+	watchers              map[Digest]map[chan struct{}]struct{}
 }
 
 func NewStore(root string, limit int64) (_ *Store, err error) {
@@ -164,6 +165,25 @@ func (s *Store) Manifest(d Digest) (Manifest, error) {
 	return m, nil
 }
 
+// Committed checks the publication marker without reading blob data. It is for
+// presence queries; callers must still use Open or Block before serving bytes.
+func (s *Store) Committed(d Digest) (bool, error) {
+	if err := d.Validate(); err != nil {
+		return false, err
+	}
+	if d.Size == 0 {
+		return true, nil
+	}
+	info, err := os.Stat(s.manifestPath(d))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return info.Mode().IsRegular() && info.Size() >= ManifestHeaderSize && info.Size() <= MaxManifestSize && (info.Size()-ManifestHeaderSize)%36 == 0, nil
+}
+
 // Block validates stored bytes every time they cross the network boundary.
 func (s *Store) Block(hash [32]byte) ([]byte, error) {
 	b, err := readBounded(s.chunkPath(hash), MaxChunkSize)
@@ -237,7 +257,37 @@ func (s *Store) put(ctx context.Context, d Digest, r io.Reader, expected *Manife
 		}
 	}
 	// The manifest is the commit marker. A partial install exposes no new blob.
-	return s.install(manifestTemp, s.manifestPath(d))
+	if err := s.install(manifestTemp, s.manifestPath(d)); err != nil {
+		return err
+	}
+	for ch := range s.watchers[d] {
+		close(ch)
+	}
+	delete(s.watchers, d)
+	return nil
+}
+
+// WatchCommit subscribes to the next successful publication. Register before
+// checking Has to avoid missing a concurrent commit, and always call cancel.
+func (s *Store) WatchCommit(d Digest) (<-chan struct{}, func()) {
+	ch := make(chan struct{})
+	s.mu.Lock()
+	if s.watchers == nil {
+		s.watchers = make(map[Digest]map[chan struct{}]struct{})
+	}
+	if s.watchers[d] == nil {
+		s.watchers[d] = make(map[chan struct{}]struct{})
+	}
+	s.watchers[d][ch] = struct{}{}
+	s.mu.Unlock()
+	return ch, func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		delete(s.watchers[d], ch)
+		if len(s.watchers[d]) == 0 {
+			delete(s.watchers, d)
+		}
+	}
 }
 
 func writeSynced(path string, b []byte) error {

@@ -273,3 +273,24 @@ func TestFullStoreCanReadAndScratchIsBounded(t *testing.T) {
 	}
 	r.Close()
 }
+
+func BenchmarkCommittedPresence(b *testing.B) {
+	s, err := NewStore(b.TempDir(), 64<<20)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer s.Close()
+	data := fixture(8 << 20)
+	d := Sum(data)
+	if err := s.Put(context.Background(), d, bytes.NewReader(data)); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		ok, err := s.Committed(d)
+		if err != nil || !ok {
+			b.Fatalf("%v %v", ok, err)
+		}
+	}
+}
