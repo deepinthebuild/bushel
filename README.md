@@ -3,12 +3,19 @@
 A peer-to-peer Bazel content-addressable store, written in Go. Bushel bridges
 REAPI gRPC to Bitswap, with RepMaxCDC chunks and SHA-256 verification.
 
-Requires Go 1.26.5 or newer. Build and run from the checkout root:
+Install [Bazelisk](https://github.com/bazelbuild/bazelisk#installation) as
+`bazel`. The checkout pins Bazel 8 LTS and downloads its Go SDK automatically.
+Windows also needs Git Bash; set `BAZEL_SH` to that shell if another Bash is
+selected from `PATH`. Build and test from the checkout root:
 
 ```sh
-go build -trimpath -o bin/ ./cmd/bushel
-go run ./cmd/bushel
+bazel build //cmd/bushel
+bazel test //...
 ```
+
+Run `bazel-bin/cmd/bushel/bushel_/bushel` from the checkout root; on Windows,
+use `bazel-bin/cmd/bushel/bushel_/bushel.exe`. The examples below use the former.
+Running the built binary keeps relative state paths anchored to the checkout.
 
 The daemon serves plaintext gRPC on `127.0.0.1:8980` and peer traffic on TCP
 8981. It prints its peer addresses at startup. State and its generated peer key
@@ -24,20 +31,20 @@ provides integrity, while peers holding content can redistribute it.
 For a local two-node network, start the first node:
 
 ```sh
-go run ./cmd/bushel -discovery=false -data-dir=data/node-a -p2p-listen=/ip4/127.0.0.1/tcp/8981
+bazel-bin/cmd/bushel/bushel_/bushel -discovery=false -data-dir=data/node-a -p2p-listen=/ip4/127.0.0.1/tcp/8981
 ```
 
 Use its printed peer ID when starting the second node:
 
 ```sh
-go run ./cmd/bushel -discovery=false -data-dir=data/node-b -grpc-listen=127.0.0.1:8982 -p2p-listen=/ip4/127.0.0.1/tcp/8983 -peer=/ip4/127.0.0.1/tcp/8981/p2p/PEER_ID
+bazel-bin/cmd/bushel/bushel_/bushel -discovery=false -data-dir=data/node-b -grpc-listen=127.0.0.1:8982 -p2p-listen=/ip4/127.0.0.1/tcp/8983 -peer=/ip4/127.0.0.1/tcp/8981/p2p/PEER_ID
 ```
 
 `-peer`, `-bootstrap`, and `-p2p-listen` are repeatable. `-instance` selects a
 REAPI instance; the default is empty. `-disk-bytes` bounds storage and upload
 staging (20 GiB by default). Verified read scratch has a separate equal budget,
 so total data usage is bounded to twice that setting, plus metadata and keys.
-Run `go run ./cmd/bushel -help` for all flags.
+Pass `-help` to the built binary for all flags.
 
 This first version provides SHA-256 CAS, Capabilities, ByteStream, and GetTree.
 It verifies chunks and reconstructed blobs before returning bytes to clients.
@@ -62,7 +69,25 @@ that lookup path. Mitigation work is tracked in [issue #7](https://github.com/de
 See [the design](docs/design.md), [v1 wire format](docs/protocol-v1.md), and
 [digest decision and benchmarks](docs/digest-choice.md).
 
-Run `go test ./...` and `go vet ./...`. The integration test uploads through one
-node's gRPC endpoint and downloads through another node over real Bitswap,
+The integration test uploads through one node's gRPC endpoint and downloads
+through another node over real Bitswap,
 without contacting public IPFS. CI runs native tests on Windows, macOS, and
-Linux, a Linux race check, and builds all six amd64/arm64 OS targets.
+Linux, `bazel test --config=race //...` on Linux, bounded fuzzing, and builds all
+six amd64/arm64 OS targets. For example:
+
+```sh
+bazel build --platforms=@rules_go//go/toolchain:linux_arm64 //cmd/bushel
+```
+
+After changing Go sources or dependencies, run `bazel mod tidy` and
+`bazel run //:gazelle`, then commit the generated BUILD files and module lock.
+`go.mod` and `go.sum` remain the Go dependency source of truth. See
+[agent instructions](AGENTS.md) for the development checks and
+[generative testing](docs/testing.md) for properties and fuzzing.
+
+The isolated digest comparison remains a supplemental Go benchmark module,
+using the same pinned SDK:
+
+```sh
+bazel run @rules_go//go -- -C benchmarks/digests test -run='^$' -bench=. -benchmem
+```

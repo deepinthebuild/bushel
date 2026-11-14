@@ -1,0 +1,53 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "p2p",
+    srcs = [
+        "blockstore.go",
+        "discovery.go",
+        "limits.go",
+        "node.go",
+    ],
+    importpath = "github.com/deepinthebuild/bushel/internal/p2p",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/cas",
+        "@com_github_ipfs_boxo//bitswap",
+        "@com_github_ipfs_boxo//bitswap/network/bsnet",
+        "@com_github_ipfs_go_block_format//:go-block-format",
+        "@com_github_ipfs_go_cid//:go-cid",
+        "@com_github_ipfs_go_ipld_format//:go-ipld-format",
+        "@com_github_libp2p_go_libp2p//:go-libp2p",
+        "@com_github_libp2p_go_libp2p//core/control",
+        "@com_github_libp2p_go_libp2p//core/crypto",
+        "@com_github_libp2p_go_libp2p//core/host",
+        "@com_github_libp2p_go_libp2p//core/network",
+        "@com_github_libp2p_go_libp2p//core/peer",
+        "@com_github_libp2p_go_libp2p//core/protocol",
+        "@com_github_libp2p_go_libp2p//p2p/host/resource-manager",
+        "@com_github_libp2p_go_libp2p//p2p/net/connmgr",
+        "@com_github_libp2p_go_libp2p//p2p/transport/tcp",
+        "@com_github_libp2p_go_libp2p_kad_dht//:go-libp2p-kad-dht",
+        "@com_github_multiformats_go_multiaddr//:go-multiaddr",
+        "@com_github_multiformats_go_multiaddr//net",
+        "@com_github_multiformats_go_multihash//:go-multihash",
+    ],
+)
+
+go_test(
+    name = "p2p_test",
+    srcs = ["node_test.go"],
+    embed = [":p2p"],
+    deps = [
+        "//internal/cas",
+        "@com_github_ipfs_go_block_format//:go-block-format",
+        "@com_github_ipfs_go_cid//:go-cid",
+        "@com_github_libp2p_go_libp2p//:go-libp2p",
+        "@com_github_libp2p_go_libp2p//core/crypto",
+        "@com_github_libp2p_go_libp2p//core/network",
+        "@com_github_libp2p_go_libp2p//core/peer",
+        "@com_github_libp2p_go_libp2p//p2p/net/connmgr",
+        "@com_github_libp2p_go_libp2p_kad_dht//:go-libp2p-kad-dht",
+        "@com_github_multiformats_go_multiaddr//:go-multiaddr",
+    ],
+)

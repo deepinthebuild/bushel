@@ -28,8 +28,8 @@ reduce deduplication unless every participant agreed on it.
 Reproduce from the checkout root:
 
 ```sh
-go -C benchmarks/digests test -run '^$' -bench . -benchmem -benchtime=300ms -count=3
-go test ./internal/cas -run '^$' -bench BenchmarkChunk -benchmem
+bazel run @rules_go//go -- -C benchmarks/digests test -run '^$' -bench . -benchmem -benchtime=300ms -count=3
+bazel run @rules_go//go -- test ./internal/cas -run '^$' -bench BenchmarkChunk -benchmem
 ```
 
 The comparison lives in a separate module. IPFS libraries may still include

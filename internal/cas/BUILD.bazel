@@ -1,0 +1,32 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "cas",
+    srcs = [
+        "chunk.go",
+        "digest.go",
+        "manifest.go",
+        "store.go",
+    ],
+    importpath = "github.com/deepinthebuild/bushel/internal/cas",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "@com_github_buildbarn_go_cdc//:go-cdc",
+        "@com_github_gofrs_flock//:flock",
+    ],
+)
+
+go_test(
+    name = "cas_test",
+    srcs = [
+        "format_test.go",
+        "property_test.go",
+        "store_property_test.go",
+        "store_test.go",
+    ],
+    embed = [":cas"],
+    deps = [
+        "@com_github_buildbarn_go_cdc//:go-cdc",
+        "@net_pgregory_rapid//:rapid",
+    ],
+)
