@@ -1,0 +1,7 @@
+common --enable_bzlmod
+build --incompatible_strict_action_env
+build --stamp=false
+build --@rules_go//go/config:pure
+test --test_output=errors
+build:race --@rules_go//go/config:race
+build:race --@rules_go//go/config:pure=false

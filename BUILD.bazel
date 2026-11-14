@@ -1,0 +1,9 @@
+load("@gazelle//:def.bzl", "gazelle")
+
+# gazelle:prefix github.com/deepinthebuild/bushel
+# gazelle:proto disable_global
+# gazelle:exclude benchmarks
+# gazelle:exclude bin
+# gazelle:exclude data
+
+gazelle(name = "gazelle")

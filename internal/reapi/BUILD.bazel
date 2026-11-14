@@ -1,0 +1,44 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "reapi",
+    srcs = [
+        "resource.go",
+        "server.go",
+        "upload.go",
+    ],
+    importpath = "github.com/deepinthebuild/bushel/internal/reapi",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/cas",
+        "@com_github_bazelbuild_remote_apis//build/bazel/remote/execution/v2:execution",
+        "@com_github_bazelbuild_remote_apis//build/bazel/semver",
+        "@org_golang_google_genproto_googleapis_bytestream//:bytestream",
+        "@org_golang_google_genproto_googleapis_rpc//status",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_test(
+    name = "reapi_test",
+    srcs = [
+        "property_test.go",
+        "server_test.go",
+    ],
+    embed = [":reapi"],
+    deps = [
+        "//internal/cas",
+        "@com_github_bazelbuild_remote_apis//build/bazel/remote/execution/v2:execution",
+        "@net_pgregory_rapid//:rapid",
+        "@org_golang_google_genproto_googleapis_bytestream//:bytestream",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//credentials/insecure",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_grpc//test/bufconn",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

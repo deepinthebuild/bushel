@@ -3,6 +3,7 @@ package cas
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -95,6 +96,21 @@ func TestChunkGolden(t *testing.T) {
 func FuzzParseManifest(f *testing.F) {
 	b, _ := (Manifest{Blob: Sum(nil)}).MarshalBinary()
 	f.Add(b)
+	one := Sum([]byte("seed"))
+	b, _ = (Manifest{Blob: one, Chunks: []Digest{one}}).MarshalBinary()
+	f.Add(b)
+	f.Add(b[:len(b)-1])
+	f.Add(append(bytes.Clone(b), 0))
+	for _, count := range []uint32{0, MaxChunks, MaxChunks + 1, 1<<32 - 1} {
+		bad := bytes.Clone(b)
+		binary.BigEndian.PutUint32(bad[48:52], count)
+		f.Add(bad)
+	}
+	for _, size := range []uint64{0, uint64(MaxBlobSize), uint64(MaxBlobSize) + 1, 1<<63 - 1, 1 << 63, 1<<64 - 1} {
+		bad := bytes.Clone(b)
+		binary.BigEndian.PutUint64(bad[40:48], size)
+		f.Add(bad)
+	}
 	f.Fuzz(func(t *testing.T, b []byte) {
 		m, err := ParseManifest(b)
 		if err != nil {
