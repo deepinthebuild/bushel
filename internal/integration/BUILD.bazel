@@ -2,18 +2,27 @@ load("@rules_go//go:def.bzl", "go_test")
 
 go_test(
     name = "integration_test",
-    srcs = ["e2e_test.go"],
+    srcs = [
+        "cache_test.go",
+        "e2e_test.go",
+    ],
     deps = [
         "//internal/cas",
         "//internal/p2p",
         "//internal/reapi",
+        "//internal/storage",
         "//internal/teststorage",
         "@com_github_bazelbuild_remote_apis//build/bazel/remote/execution/v2:execution",
+        "@com_github_buildbarn_bb_storage//pkg/blobstore/chunk",
+        "@com_github_buildbarn_bb_storage//pkg/digest",
+        "@com_github_buildbarn_bb_storage//pkg/program",
         "@com_github_libp2p_go_libp2p//core/crypto",
         "@com_github_libp2p_go_libp2p//core/peer",
         "@com_github_multiformats_go_multiaddr//:go-multiaddr",
         "@org_golang_google_genproto_googleapis_bytestream//:bytestream",
         "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//credentials/insecure",
+        "@org_golang_google_grpc//status",
     ],
 )
