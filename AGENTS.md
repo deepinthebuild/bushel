@@ -4,8 +4,11 @@ Bazel is the primary build. From the checkout root run:
 ```sh
 bazel build //cmd/bushel
 bazel test //...
-bazel run @rules_go//go -- vet ./...
 ```
+
+Builds and tests run Go analysis through Bazel's validation aspect and rules_go
+`nogo`; no separate SDK vet command is needed. Keep the analyzer list aligned
+with the pinned SDK on upgrades. See [analysis](docs/go-analysis.md) for scope.
 
 Use `bazel run //cmd/bushel -- ...` to launch the daemon. The checked-in
 `run --run_in_cwd` preserves the invocation directory for relative data paths.
@@ -32,6 +35,9 @@ module is excluded from Gazelle; check it with:
 ```sh
 bazel run @rules_go//go -- -C benchmarks/digests test ./...
 ```
+
+The Bazel-only analyzer dependency in `MODULE.bazel` tracks the `x/tools`
+version in `go.mod`; update those pins together when changing it.
 
 After changing `internal/publication/pb/journal.proto`, run
 `bazel run //internal/publication/pb:update` and commit `journal.pb.go`.

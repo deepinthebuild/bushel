@@ -6,16 +6,31 @@ bazel_dep(name = "llvm", version = "0.8.27")
 bazel_dep(name = "protobuf", version = "33.4")
 bazel_dep(name = "bazel_lib", version = "3.2.2")
 
+# Adapt nogo to the x/tools facts API selected by the existing Go dependencies.
+single_version_override(
+    module_name = "rules_go",
+    patch_strip = 1,
+    patches = ["//tools/patches:rules_go_nogo_facts.patch"],
+)
+
 register_toolchains("@llvm//toolchain:all")
 
 go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
 go_sdk.download(version = "1.27.4")
+go_sdk.nogo(nogo = "//:vet")
 
 go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
 
 # SDK commands do not inherit Bazel's C/C++ toolchain; keep them in pure mode.
 go_deps.config(go_env = {"CGO_ENABLED": "0"})
 go_deps.from_file(go_mod = "//:go.mod")
+
+# Analyzer-only direct dependency; keep aligned with go.mod's resolved version.
+go_deps.module(
+    path = "golang.org/x/tools",
+    sum = "h1:Yqozs0FNPRoPGS4hNGlrNwRENWr5H5nVG9sN/f+5640=",
+    version = "v0.52.1-0.20261106145633-d407941a339a",
+)
 
 # Depend on the generated Go protobuf sources shipped in the Go modules.
 go_deps.gazelle_default_attributes(directives = ["gazelle:proto disable_global"])
@@ -60,4 +75,5 @@ use_repo(
     "org_golang_google_genproto_googleapis_rpc",
     "org_golang_google_grpc",
     "org_golang_google_protobuf",
+    "org_golang_x_tools",
 )

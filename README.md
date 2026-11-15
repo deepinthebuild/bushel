@@ -13,6 +13,8 @@ bazel build //cmd/bushel
 bazel test //...
 ```
 
+Builds and tests also run cached [Go static analysis](docs/go-analysis.md).
+
 Run from the checkout root:
 
 ```sh
