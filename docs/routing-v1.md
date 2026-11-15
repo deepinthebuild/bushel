@@ -53,6 +53,45 @@ guarantee that every blob stays discoverable, and a miss never proves global
 absence. A disk-backed index can extend capacity if catalogs exceed a reasonable
 RAM budget.
 
+For capacity planning, count blob/provider pairs rather than blob bytes. A
+provider with more advertised blobs than `-routing-records-per-peer` cannot
+retain its whole catalog on one node, even if that node has spare total slots.
+Likewise, the total slot count must accommodate all providers assigned to a
+node, with headroom for uneven DHT placement, provider churn and overlapping
+renewals. Neither dividing catalog size evenly by node count nor increasing
+these limits guarantees coverage. Monitor actual evictions and lookup success.
+The announcement worker starts at most 10 calls per second: 100,000 distinct
+blobs take about 10,000 seconds (2 hours 47 minutes) for one pass, before
+backend probes, retries, network delays or the six-hour interval. Large
+catalogs must be tested against actual sweep duration and expiry, not just the
+nominal call rate.
+
+The current index is lost at restart. A persistent option is still under
+evaluation; configuring a larger in-memory limit does not persist it. A generic
+datastore adapter alone would not preserve the per-provider and per-blob
+eviction limits, bounded snapshots and staging, or a physical disk bound.
+[bbolt](https://github.com/etcd-io/bbolt) provides transactional updates, but
+its documentation says freed pages remain in the file and long-lived read
+transactions can cause growth. [Pebble](https://github.com/cockroachdb/pebble)
+uses compaction and its upstream notes describe possible space amplification.
+Either would need an explicit disk budget, safe reclamation and crash testing
+before it could replace the bounded in-memory store. The legacy
+[go-ds-badger](https://github.com/ipfs/go-ds-badger) adapter is unmaintained
+and its upstream recommends against new use. These observations do not measure
+the performance of a persistent implementation.
+
+In a local Windows/amd64 run of `BenchmarkRoutingIndex` at 32,768 synthetic
+records, three one-second samples of a hot exact-key lookup took 35.6–36.8 ns
+per operation. Three single-iteration samples of materializing a full snapshot
+took 3.3–7.9 ms and allocated about 15 MB; a synthetic snapshot-and-delete
+expiry pass took 11.9–14.2 ms. Three same-process heap samples retained about
+539–540 Go heap bytes per record. These numbers exclude network operations,
+manager overhead and OS memory, and are not a persistent-store benchmark. The
+single-iteration timings are noisy. Keys were synthetic, one provider owned all
+records, and the expiry benchmark is not the upstream manager's GC path. Use
+these only to understand the existing store's scaling, and measure a realistic
+workload on the target deployment before setting limits.
+
 All nodes serve the application DHT. Serving discovered clients requires a
 reachable public TCP address; automatic NAT relaying remains separate work.
 Partitions, unreachable providers and adversarial routing can prevent lookup.
