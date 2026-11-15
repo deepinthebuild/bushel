@@ -315,6 +315,7 @@ func (s *Store) Block(ctx context.Context, d Digest) ([]byte, error) {
 // Verified orphan chunks may survive a later failure. CMS publication is last.
 func (s *Store) putBackend(ctx context.Context, m Manifest, stage string) error {
 	keys := make([]digest.Digest, 0, len(m.Chunks))
+	written := make(map[Digest]struct{}, len(m.Chunks))
 	for _, c := range m.Chunks {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -324,6 +325,9 @@ func (s *Store) putBackend(ctx context.Context, m Manifest, stage string) error 
 			return err
 		}
 		keys = append(keys, key)
+		if _, ok := written[c]; ok {
+			continue
+		}
 		b, err := readBounded(stageChunkPath(stage, c), MaxChunkSize)
 		if err != nil {
 			return err
@@ -335,6 +339,7 @@ func (s *Store) putBackend(ctx context.Context, m Manifest, stage string) error 
 		if err := s.backend.Chunks.Put(ctx, key, chunk.NewChunk(b)); err != nil {
 			return backendError(err)
 		}
+		written[c] = struct{}{}
 	}
 	if len(keys) < 2 {
 		return nil
