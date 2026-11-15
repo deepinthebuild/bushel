@@ -55,6 +55,7 @@ type routingStore struct {
 	providers    map[string]*list.List
 	order        list.List
 	bytes        int
+	evictions    uint64
 	batches      map[*routingBatch]struct{}
 	pendingCount int
 	pendingBytes int
@@ -130,7 +131,7 @@ func (s *routingStore) putLocked(key string, value []byte) {
 		s.providers[old.provider].MoveToBack(old.byProvider)
 		s.bytes -= len(old.value)
 		for s.bytes > s.limits.MaxBytes-len(value) {
-			s.removeLocked(s.order.Front().Value.(*routingRecord))
+			s.evictLocked(s.order.Front().Value.(*routingRecord))
 		}
 		old.value = value
 		s.bytes += len(value)
@@ -139,14 +140,14 @@ func (s *routingStore) putLocked(key string, value []byte) {
 	i := strings.LastIndexByte(key, '/')
 	group, provider := key[:i], key[i+1:]
 	if entries := s.groups[group]; entries != nil && entries.Len() >= s.limits.MaxProvidersPerKey {
-		s.removeLocked(entries.Front().Value.(*routingRecord))
+		s.evictLocked(entries.Front().Value.(*routingRecord))
 	}
 	if entries := s.providers[provider]; entries != nil && entries.Len() >= s.limits.MaxKeysPerProvider {
-		s.removeLocked(entries.Front().Value.(*routingRecord))
+		s.evictLocked(entries.Front().Value.(*routingRecord))
 	}
 	size := len(key) + len(value)
 	for len(s.records) >= s.limits.MaxRecords || s.bytes > s.limits.MaxBytes-size {
-		s.removeLocked(s.order.Front().Value.(*routingRecord))
+		s.evictLocked(s.order.Front().Value.(*routingRecord))
 	}
 	r := &routingRecord{key: key, group: group, provider: provider, value: value}
 	if s.groups[group] == nil {
@@ -160,6 +161,11 @@ func (s *routingStore) putLocked(key string, value []byte) {
 	r.byProvider = s.providers[provider].PushBack(r)
 	s.records[key] = r
 	s.bytes += size
+}
+
+func (s *routingStore) evictLocked(r *routingRecord) {
+	s.evictions++
+	s.removeLocked(r)
 }
 
 func (s *routingStore) removeLocked(r *routingRecord) {

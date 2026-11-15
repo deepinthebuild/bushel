@@ -50,13 +50,20 @@ func (n *Node) discoveryHost(cfg Config) (host.Host, error) {
 	for _, info := range cfg.Bootstrap {
 		gate.trust(info.ID)
 	}
+	ps, err := routingPeerstore()
+	if err != nil {
+		_ = rm.Close()
+		_ = cm.Close()
+		return nil, err
+	}
 	h, err := libp2p.New(libp2p.Identity(cfg.PrivateKey), libp2p.NoListenAddrs,
 		libp2p.NoTransports, libp2p.Transport(tcp.NewTCPTransport), libp2p.DisableRelay(),
-		libp2p.ResourceManager(rm), libp2p.ConnectionManager(cm), libp2p.ConnectionGater(gate), libp2p.UserAgent("bushel-discovery/1"),
+		libp2p.Peerstore(ps), libp2p.ResourceManager(rm), libp2p.ConnectionManager(cm), libp2p.ConnectionGater(gate), libp2p.UserAgent("bushel-discovery/1"),
 		// The hosts authenticate as the same peer, but provider records refer to
 		// the content listener. No discovery connection carries Bitswap traffic.
 		libp2p.AddrsFactory(func([]ma.Multiaddr) []ma.Multiaddr { return n.host.Addrs() }))
 	if err != nil {
+		_ = ps.Close()
 		_ = rm.Close()
 		_ = cm.Close()
 	}

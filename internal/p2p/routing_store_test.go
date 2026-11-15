@@ -542,8 +542,9 @@ func modelRoutingPut(model []routingModelRecord, key string, value []byte, limit
 	return append(model, routingModelRecord{key: key, group: group, provider: provider, value: bytes.Clone(value)})
 }
 
-func checkRoutingModel(t *rapid.T, s *routingStore, model []routingModelRecord) {
+func checkRoutingModel(t *rapid.T, s *routingStore, model []routingModelRecord, evictions uint64) {
 	t.Helper()
+	stats := (&Node{providerData: s}).RoutingStats()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.records) != len(model) || s.order.Len() != len(model) || len(s.records) > s.limits.MaxRecords ||
@@ -561,6 +562,9 @@ func checkRoutingModel(t *rapid.T, s *routingStore, model []routingModelRecord) 
 	}
 	if total != s.bytes || total > s.limits.MaxBytes {
 		t.Fatalf("payload accounting %d, want %d, cap %d", s.bytes, total, s.limits.MaxBytes)
+	}
+	if stats.Records != len(model) || stats.PayloadBytes != total || stats.Evictions != evictions {
+		t.Fatalf("routing stats %+v, want %d records, %d bytes, %d capacity evictions", stats, len(model), total, evictions)
 	}
 	groupCount, providerCount := 0, 0
 	for group, entries := range s.groups {
@@ -607,6 +611,15 @@ func TestPropertyRoutingStoreHistories(t *testing.T) {
 		defer s.Close()
 		ctx := context.Background()
 		var model []routingModelRecord
+		var evictions uint64
+		putModel := func(key string, value []byte) {
+			count := len(model)
+			if slices.ContainsFunc(model, func(r routingModelRecord) bool { return r.key == key }) {
+				count-- // A refresh replaces a record; it is not an eviction.
+			}
+			model = modelRoutingPut(model, key, value, limits)
+			evictions += uint64(count + 1 - len(model))
+		}
 		// Both the history length and every action shrink to a minimal failing
 		// sequence; small generated limits force collisions and evictions.
 		actions := rapid.SliceOfN(rapid.IntRange(0, 2047), 1, 100).Draw(t, "actions")
@@ -616,7 +629,7 @@ func TestPropertyRoutingStoreHistories(t *testing.T) {
 			switch action % 8 {
 			case 0, 1:
 				err = s.Put(ctx, ds.NewKey(key), value)
-				model = modelRoutingPut(model, key, value, limits)
+				putModel(key, value)
 			case 2:
 				err = s.Delete(ctx, ds.NewKey(key))
 				model = slices.DeleteFunc(model, func(r routingModelRecord) bool { return r.key == key })
@@ -632,9 +645,9 @@ func TestPropertyRoutingStoreHistories(t *testing.T) {
 				if err = batch.Delete(ctx, ds.NewKey(other)); err != nil {
 					t.Fatal(err)
 				}
-				checkRoutingModel(t, s, model)
+				checkRoutingModel(t, s, model, evictions)
 				err = batch.Commit(ctx)
-				model = modelRoutingPut(model, key, value, limits)
+				putModel(key, value)
 				model = slices.DeleteFunc(model, func(r routingModelRecord) bool { return r.key == other })
 			case 4:
 				batch, batchErr := s.Batch(ctx)
@@ -699,7 +712,7 @@ func TestPropertyRoutingStoreHistories(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			checkRoutingModel(t, s, model)
+			checkRoutingModel(t, s, model, evictions)
 		}
 	})
 }

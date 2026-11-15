@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/deepinthebuild/bushel/internal/cas"
@@ -18,12 +19,14 @@ import (
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	"github.com/libp2p/go-libp2p"
+	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/libp2p/go-libp2p/p2p/transport/tcp"
+	ma "github.com/multiformats/go-multiaddr"
 )
 
 const (
@@ -43,38 +46,70 @@ type Config struct {
 	Peers          []peer.AddrInfo
 	Discovery      bool
 	RequestTimeout time.Duration
-	MaxPeers       int
+	// MaxPeers bounds content connections, from 8 to 128 (default 64).
+	MaxPeers int
+	// RoutingRecords bounds cached blob/provider pairs, from 64 to 1048576
+	// (default 32768). Payload storage is additionally bounded to 256 times this.
+	RoutingRecords int
+	// RoutingRecordsPerPeer bounds records from one provider, from 1 to
+	// RoutingRecords. Zero defaults to min(16384, RoutingRecords).
+	RoutingRecordsPerPeer int
+	// Tests can drive maintenance without real renewal intervals. Production
+	// callers outside this package use the bounded defaults.
+	announcements         AnnouncerOptions
+	disableRoutingRefresh bool
 }
 
 type Node struct {
-	store     *cas.Store
-	host      host.Host
-	discovery host.Host
-	router    rendezvousRouter
-	gate      *dialGate
-	bitswap   *bitswap.Bitswap
-	ctx       context.Context
-	cancel    context.CancelFunc
-	timeout   time.Duration
-	maxPeers  int
-	transfers chan struct{}
-	lookups   chan struct{}
-	mu        sync.Mutex
-	closing   bool
-	wg        sync.WaitGroup
-	closeOnce sync.Once
-	closeErr  error
+	store           *cas.Store
+	host            host.Host
+	discovery       host.Host
+	router          rendezvousRouter
+	overlay         *dht.IpfsDHT
+	blobRouter      blobProviderRouter
+	providerData    *routingStore
+	peerstore       io.Closer
+	filterAddresses func([]ma.Multiaddr) []ma.Multiaddr
+	announcer       atomic.Pointer[Announcer]
+	gate            *dialGate
+	bitswap         *bitswap.Bitswap
+	ctx             context.Context
+	cancel          context.CancelFunc
+	timeout         time.Duration
+	maxPeers        int
+	transfers       chan struct{}
+	lookups         chan struct{}
+	mu              sync.Mutex
+	closing         bool
+	wg              sync.WaitGroup
+	closeOnce       sync.Once
+	closeErr        error
 }
 
-func New(ctx context.Context, cfg Config) (_ *Node, err error) {
+func New(ctx context.Context, cfg Config) (*Node, error) {
+	return newNode(ctx, cfg, publicAddresses)
+}
+
+// newNode accepts an address policy so isolated tests can use loopback peers.
+// The public constructor always enforces the public-IP/TCP policy on referrals.
+func newNode(ctx context.Context, cfg Config, filter func([]ma.Multiaddr) []ma.Multiaddr) (_ *Node, err error) {
 	if cfg.Store == nil || cfg.PrivateKey == nil {
 		return nil, errors.New("store and private key are required")
 	}
 	if cfg.MaxPeers == 0 {
-		cfg.MaxPeers = 32
+		cfg.MaxPeers = 64
 	}
-	if cfg.MaxPeers < 1 || cfg.MaxPeers > 128 || len(cfg.Peers) > cfg.MaxPeers || len(cfg.Bootstrap) > 16 {
+	if cfg.MaxPeers < 8 || cfg.MaxPeers > 128 || len(cfg.Peers) > cfg.MaxPeers || len(cfg.Bootstrap) > 16 {
 		return nil, errors.New("invalid peer limits")
+	}
+	if cfg.RoutingRecords == 0 {
+		cfg.RoutingRecords = 32768
+	}
+	if cfg.RoutingRecordsPerPeer == 0 {
+		cfg.RoutingRecordsPerPeer = min(16384, cfg.RoutingRecords)
+	}
+	if cfg.RoutingRecords < 64 || cfg.RoutingRecords > 1<<20 || cfg.RoutingRecordsPerPeer < 1 || cfg.RoutingRecordsPerPeer > cfg.RoutingRecords {
+		return nil, errors.New("invalid routing index capacity")
 	}
 	if cfg.RequestTimeout == 0 {
 		cfg.RequestTimeout = 30 * time.Second
@@ -86,8 +121,12 @@ func New(ctx context.Context, cfg Config) (_ *Node, err error) {
 		cfg.Listen = []string{"/ip4/0.0.0.0/tcp/0", "/ip6/::/tcp/0"}
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	n := &Node{store: cfg.Store, ctx: ctx, cancel: cancel, timeout: cfg.RequestTimeout, maxPeers: cfg.MaxPeers,
+	n := &Node{store: cfg.Store, ctx: ctx, cancel: cancel, timeout: cfg.RequestTimeout, maxPeers: cfg.MaxPeers, filterAddresses: filter,
 		transfers: make(chan struct{}, 4), lookups: make(chan struct{}, 16), gate: &dialGate{trusted: make(map[peer.ID]bool), max: cfg.MaxPeers}}
+	n.gate.filter = filter
+	for _, info := range cfg.Peers {
+		n.gate.trust(info.ID)
+	}
 	defer func() {
 		if err != nil {
 			_ = n.Close()
@@ -97,19 +136,37 @@ func New(ctx context.Context, cfg Config) (_ *Node, err error) {
 	if err != nil {
 		return nil, err
 	}
-	n.host, err = libp2p.New(libp2p.Identity(cfg.PrivateKey), libp2p.ListenAddrStrings(cfg.Listen...),
-		libp2p.NoTransports, libp2p.Transport(tcp.NewTCPTransport), libp2p.DisableRelay(),
-		libp2p.ResourceManager(rm), libp2p.ConnectionGater(n.gate), libp2p.UserAgent("bushel/1"))
+	cm, err := contentConnectionManager(cfg.MaxPeers)
 	if err != nil {
 		_ = rm.Close()
 		return nil, err
 	}
+	ps, err := routingPeerstore()
+	if err != nil {
+		_ = cm.Close()
+		_ = rm.Close()
+		return nil, err
+	}
+	n.peerstore = ps
+	n.host, err = libp2p.New(libp2p.Identity(cfg.PrivateKey), libp2p.ListenAddrStrings(cfg.Listen...),
+		libp2p.NoTransports, libp2p.Transport(tcp.NewTCPTransport), libp2p.DisableRelay(),
+		libp2p.Peerstore(ps), libp2p.ConnectionManager(cm), libp2p.ResourceManager(rm), libp2p.ConnectionGater(n.gate), libp2p.UserAgent("bushel/1"))
+	if err != nil {
+		_ = cm.Close()
+		_ = rm.Close()
+		return nil, err
+	}
+	// BasicHost owns and closes the supplied peerstore after construction.
+	n.peerstore = nil
 	n.host.SetStreamHandler(ManifestProtocol, n.serveManifest)
 	n.bitswap = bitswap.New(ctx, bsnet.NewFromIpfsHost(n.host, bsnet.Prefix(bitswapPrefix), bsnet.SupportedProtocols([]protocol.ID{bsnet.ProtocolBitswap})),
 		noProviders{}, readStore{cfg.Store}, bitswap.EngineBlockstoreWorkerCount(4), bitswap.EngineTaskWorkerCount(4), bitswap.TaskWorkerCount(4),
 		bitswap.MaxOutstandingBytesPerPeer(2<<20), bitswap.MaxQueuedWantlistEntriesPerPeer(256), bitswap.MaxCidSize(36),
 		bitswap.WithTargetMessageSize(1<<20), bitswap.WithoutDuplicatedBlockStats(),
 		bitswap.WithPeerBlockRequestFilter(func(_ peer.ID, c cid.Cid) bool { _, ok := chunkHash(c); return ok }))
+	if err := n.initRouting(cfg); err != nil {
+		return nil, err
+	}
 	if cfg.Discovery {
 		if err := n.initDiscovery(cfg); err != nil {
 			return nil, err
@@ -119,6 +176,11 @@ func New(ctx context.Context, cfg Config) (_ *Node, err error) {
 		n.wg.Add(1)
 		go func() { defer n.wg.Done(); n.maintain(cfg) }()
 	}
+	if err := n.startAnnouncements(cfg.announcements); err != nil {
+		return nil, err
+	}
+	n.wg.Add(1)
+	go func() { defer n.wg.Done(); n.reportRoutingPressure() }()
 	return n, nil
 }
 
@@ -155,6 +217,12 @@ func (n *Node) Close() error {
 		if n.router != nil {
 			n.closeErr = errors.Join(n.closeErr, n.router.Close())
 		}
+		if n.overlay != nil {
+			n.closeErr = errors.Join(n.closeErr, n.overlay.Close())
+		}
+		if n.providerData != nil {
+			n.closeErr = errors.Join(n.closeErr, n.providerData.Close())
+		}
 		if n.discovery != nil {
 			n.closeErr = errors.Join(n.closeErr, n.discovery.Close())
 		}
@@ -165,6 +233,9 @@ func (n *Node) Close() error {
 			n.closeErr = errors.Join(n.closeErr, n.host.Close())
 		}
 		n.wg.Wait()
+		if n.peerstore != nil {
+			n.closeErr = errors.Join(n.closeErr, n.peerstore.Close())
+		}
 	})
 	return n.closeErr
 }
@@ -393,7 +464,7 @@ func (n *Node) Fetch(ctx context.Context, d cas.Digest) error {
 	if len(ids) > n.maxPeers {
 		ids = ids[:n.maxPeers]
 	}
-	results, stopLookups := n.lookupManifests(ctx, ids, d)
+	results, stopLookups := n.lookupBlobManifests(ctx, ids, d)
 	defer stopLookups()
 	hadCorruption := false
 	for result := range results {

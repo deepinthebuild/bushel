@@ -49,22 +49,31 @@ Pass `-help` to the built binary for all flags.
 This first version provides SHA-256 CAS, Capabilities, ByteStream, and GetTree.
 It verifies chunks and reconstructed blobs before returning bytes to clients.
 FindMissingBlobs checks local publication metadata. Read misses fetch from
-connected peers, then populate the local CAS. Interrupted uploads restart at
+connected peers or providers discovered through the Bushel DHT, then populate
+the local CAS. Interrupted uploads restart at
 zero; compression and client-side chunk-mapping RPCs are not advertised.
 
 The CAS endpoint is a building block for Bazel infrastructure. A complete build
 cache also needs an action-cache service. Follow-up work is tracked for
 [eviction and storage performance](https://github.com/deepinthebuild/bushel/issues/3),
-[global content routing](https://github.com/deepinthebuild/bushel/issues/4),
 [upload resumption and interoperability](https://github.com/deepinthebuild/bushel/issues/5),
 and [NAT traversal](https://github.com/deepinthebuild/bushel/issues/6).
-Lookup currently covers a bounded set of connected peers; a miss does not prove
-global absence. Public discovery requires reachable peer addresses.
+The [Bushel provider DHT](docs/routing-v1.md) routes lookups beyond connected
+peers. Verified uploads are announced asynchronously; catalog scans recover
+restarts and renew availability hints. A miss does not prove global absence.
+Public discovery and serving new peers require reachable TCP addresses.
+
+The routing index defaults to 32,768 blob/provider pairs, at most 16,384 from
+one provider. `-routing-records` and `-routing-records-per-peer` tune this RAM
+budget independently of CAS disk capacity. Saturation evicts old hints and can
+reduce lookup coverage. The daemon reports announcement progress and warns
+about capacity evictions or scans that risk provider-record expiry.
 
 The dependency scan reports the upstream DHT censorship advisory
 [GO-2024-3218](https://pkg.go.dev/vuln/GO-2024-3218), with no known fixed version.
-It can disrupt peer discovery; explicit peers with discovery disabled avoid
-that lookup path. Mitigation work is tracked in [issue #7](https://github.com/deepinthebuild/bushel/issues/7).
+It can disrupt public peer discovery and Bushel provider routing. Explicit peers
+with discovery disabled avoid public bootstrap lookup; the Bushel overlay still
+uses Kademlia. Mitigation work is tracked in [issue #7](https://github.com/deepinthebuild/bushel/issues/7).
 
 See [the design](docs/design.md), [v1 wire format](docs/protocol-v1.md), and
 [digest decision and benchmarks](docs/digest-choice.md).

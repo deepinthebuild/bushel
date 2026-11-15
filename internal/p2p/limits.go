@@ -72,6 +72,7 @@ type dialGate struct {
 	mu      sync.RWMutex
 	trusted map[peer.ID]bool
 	max     int
+	filter  func([]ma.Multiaddr) []ma.Multiaddr
 }
 
 func (g *dialGate) trust(id peer.ID) bool {
@@ -89,7 +90,13 @@ func (g *dialGate) InterceptAddrDial(id peer.ID, addr ma.Multiaddr) bool {
 	g.mu.RLock()
 	trusted := g.trusted[id]
 	g.mu.RUnlock()
-	return trusted || publicAddress(addr)
+	if trusted {
+		return true
+	}
+	if g.filter != nil {
+		return len(g.filter([]ma.Multiaddr{addr})) != 0
+	}
+	return publicAddress(addr)
 }
 func (*dialGate) InterceptAccept(network.ConnMultiaddrs) bool { return true }
 func (*dialGate) InterceptSecured(network.Direction, peer.ID, network.ConnMultiaddrs) bool {
