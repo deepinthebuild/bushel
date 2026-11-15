@@ -31,7 +31,6 @@ jobs:
       - run: bazel test //...
       - run: bazel build //cmd/bushel
       - run: bazel run //cmd/bushel -- -help
-      - run: bazel run @rules_go//go -- -C benchmarks/digests test ./...
   race:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -94,6 +93,5 @@ jobs:
       - name: Check Go formatting and module files
         run: |
           bazel run @rules_go//go -- fmt ./...
-          bazel run @rules_go//go -- -C benchmarks/digests fmt ./...
           bazel mod tidy
           git diff --exit-code

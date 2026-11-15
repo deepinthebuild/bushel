@@ -99,7 +99,7 @@ uses Kademlia. Mitigation work is tracked in [issue #7](https://github.com/deepi
 
 Wire formats may change incompatibly until the first stable release.
 See [the design](docs/design.md), [wire format](docs/protocol-v1.md), and
-[digest decision and benchmarks](docs/digest-choice.md).
+[digest decision](docs/digest-choice.md).
 
 The integration test uploads through one node's gRPC endpoint and downloads
 through another node over real Bitswap,
@@ -122,10 +122,3 @@ After changing Go sources or dependencies, run `bazel mod tidy` and
 `go.mod` and `go.sum` remain the Go dependency source of truth. See
 [agent instructions](AGENTS.md) for the development checks and
 [generative testing](docs/testing.md) for properties and fuzzing.
-
-The isolated digest comparison remains a supplemental Go benchmark module,
-using the same pinned SDK:
-
-```sh
-bazel run @rules_go//go -- -C benchmarks/digests test -run='^$' -bench=. -benchmem
-```

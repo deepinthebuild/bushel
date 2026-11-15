@@ -29,12 +29,7 @@ After adding Go files or changing `go.mod`/`go.sum`, run `bazel mod tidy` and
 `bazel run //:gazelle`. Commit generated BUILD files and `MODULE.bazel.lock`.
 Check generation with `bazel run //:gazelle -- -mode=diff`. Keep Go dependencies
 in `go.mod`; Bzlmod imports them through `go_deps`. Use the pinned SDK for module
-edits: `bazel run @rules_go//go -- mod tidy`. The separate `benchmarks/digests`
-module is excluded from Gazelle; check it with:
-
-```sh
-bazel run @rules_go//go -- -C benchmarks/digests test ./...
-```
+edits: `bazel run @rules_go//go -- mod tidy`.
 
 The Bazel-only analyzer dependency in `MODULE.bazel` tracks the `x/tools`
 version in `go.mod`; update those pins together when changing it.
