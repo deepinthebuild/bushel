@@ -16,8 +16,7 @@ reusing the existing importer's canonical package objects. Remove it when a
 rules_go upgrade includes that adapter.
 
 The scope includes generated first-party Go code. External dependencies supply
-facts but their diagnostics are excluded. The separate digest benchmark module
-remains outside the Bazel target graph.
+facts but their diagnostics are excluded.
 
 rules_go 0.65 analyzes selected Go sources: it does not supply the analyzer
 `OtherFiles` or `IgnoredFiles` lists used for assembly and excluded-source

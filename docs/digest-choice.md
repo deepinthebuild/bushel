@@ -4,9 +4,9 @@ Bushel uses SHA-256 for blobs and chunks. Chunk CIDs carry that hash plus size
 using the [Bushel multihash](protocol-v1.md); routing CIDs use standard SHA2-256.
 There is no runtime digest-algorithm option.
 
-Compared Go's `crypto/sha256` with `github.com/zeebo/blake3` v0.2.4 using reused
-streaming hashers, single-threaded writes, three 300 ms samples per size. Median
-throughput (decimal MB/s):
+The original comparison used Go's `crypto/sha256` and `github.com/zeebo/blake3`
+v0.2.4 with reused streaming hashers, single-threaded writes, and three 300 ms
+samples per size. Median throughput (decimal MB/s):
 
 | Input | SHA-256 | BLAKE3 |
 | --- | ---: | ---: |
@@ -28,14 +28,7 @@ Supporting alternate blob identities would require rehashing the original bytes
 and maintaining verified mappings; hashes cannot be translated directly.
 Bushel uses only SHA-256.
 
-Reproduce from the checkout root:
-
-```sh
-bazel run @rules_go//go -- -C benchmarks/digests test -run '^$' -bench . -benchmem -benchtime=300ms -count=3
-bazel run @rules_go//go -- test ./internal/cas -run '^$' -bench BenchmarkChunk -benchmem
-```
-
-The comparison lives in a separate module. IPFS libraries may still include
-BLAKE3 transitively; Bushel's identities and verification use only SHA-256.
+IPFS libraries may still include BLAKE3 transitively; Bushel's identities and
+verification use only SHA-256.
 References: [REAPI digest functions](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto),
 [BLAKE3 Go implementation](https://github.com/zeebo/blake3).
