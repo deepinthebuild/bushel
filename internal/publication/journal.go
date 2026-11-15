@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,8 +14,10 @@ import (
 	"time"
 
 	"github.com/deepinthebuild/bushel/internal/cas"
+	publicationpb "github.com/deepinthebuild/bushel/internal/publication/pb"
 	"github.com/gofrs/flock"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -25,20 +26,6 @@ const (
 	maxJournalBytes  = 32 << 20
 	maxJournalFrames = 1024
 )
-
-// Entries contain a complete accounting header and after-images of changed
-// jobs. Only checkpoints contain every job. Framing permits recovery of an
-// interrupted final append without accepting a damaged, complete record.
-type journalEntry struct {
-	Reset   bool            `json:"reset"`
-	State   json.RawMessage `json:"state"`
-	Deleted []savedDigest   `json:"deleted"`
-}
-
-type savedDigest struct {
-	Hash string `json:"hash"`
-	Size int64  `json:"size"`
-}
 
 type jobStamp struct {
 	Created, Due int64
@@ -57,75 +44,68 @@ func stamp(j *job) jobStamp {
 }
 
 func encodeEntry(s *state, reset bool, deleted []cas.Digest) ([]byte, error) {
-	data, err := marshalState(s)
+	v, err := snapshotMessage(s)
 	if err != nil {
 		return nil, err
 	}
-	e := journalEntry{Reset: reset, State: data}
+	if len(deleted) > maxRecords {
+		return nil, errors.New("too many publication journal deletions")
+	}
+	e := &publicationpb.JournalEntry{Kind: publicationpb.RecordKind_RECORD_KIND_DELTA, State: v}
+	if reset {
+		e.Kind = publicationpb.RecordKind_RECORD_KIND_CHECKPOINT
+	}
 	for _, d := range deleted {
-		e.Deleted = append(e.Deleted, savedDigest{d.Hex(), d.Size})
+		e.Deleted = append(e.Deleted, digestMessage(d))
 	}
-	slices.SortFunc(e.Deleted, func(a, b savedDigest) int {
-		if a.Hash < b.Hash {
-			return -1
-		}
-		if a.Hash > b.Hash {
-			return 1
-		}
-		if a.Size < b.Size {
-			return -1
-		}
-		if a.Size > b.Size {
-			return 1
-		}
-		return 0
-	})
-	payload, err := json.Marshal(e)
-	if err != nil {
-		return nil, err
-	}
-	if len(payload) > maxSnapshotBytes {
+	slices.SortFunc(e.Deleted, compareDigestMessages)
+	size := proto.Size(e)
+	if size > maxSnapshotBytes {
 		return nil, errors.New("publication journal entry exceeds limit")
 	}
-	frame := make([]byte, frameHeaderBytes+len(payload))
+	frame, err := (proto.MarshalOptions{Deterministic: true}).MarshalAppend(make([]byte, frameHeaderBytes, frameHeaderBytes+size), e)
+	if err != nil {
+		return nil, err
+	}
+	payload := frame[frameHeaderBytes:]
 	binary.BigEndian.PutUint32(frame, uint32(len(payload)))
 	binary.BigEndian.PutUint32(frame[4:], ^uint32(len(payload)))
 	sum := sha256.Sum256(payload)
 	copy(frame[8:], sum[:])
-	copy(frame[frameHeaderBytes:], payload)
 	return frame, nil
 }
 
 func decodeEntry(payload []byte) (*state, bool, []cas.Digest, error) {
-	if err := checkJSONBounds(payload); err != nil {
+	if len(payload) > maxSnapshotBytes {
+		return nil, false, nil, errors.New("publication journal entry exceeds limit")
+	}
+	if err := checkProtoBounds(payload, entryWire); err != nil {
 		return nil, false, nil, err
 	}
-	var e journalEntry
-	d := json.NewDecoder(bytes.NewReader(payload))
-	d.DisallowUnknownFields()
-	if err := d.Decode(&e); err != nil {
+	var e publicationpb.JournalEntry
+	if err := (proto.UnmarshalOptions{RecursionLimit: 8}).Unmarshal(payload, &e); err != nil {
 		return nil, false, nil, err
 	}
-	if err := d.Decode(new(any)); err != io.EOF {
-		return nil, false, nil, errors.New("trailing journal entry data")
+	if e.Kind != publicationpb.RecordKind_RECORD_KIND_CHECKPOINT && e.Kind != publicationpb.RecordKind_RECORD_KIND_DELTA {
+		return nil, false, nil, errors.New("invalid publication journal record kind")
 	}
-	s, err := parseState(e.State)
+	s, err := restoreSnapshot(e.State)
 	if err != nil {
 		return nil, false, nil, err
 	}
 	var deleted []cas.Digest
 	for _, r := range e.Deleted {
-		d, err := cas.ParseDigest(r.Hash, r.Size)
-		if err != nil || s.Jobs[d] != nil || (len(deleted) > 0 && (deleted[len(deleted)-1].Hex() > d.Hex() || (deleted[len(deleted)-1].Hash == d.Hash && deleted[len(deleted)-1].Size >= d.Size))) {
+		d, err := restoreDigest(r)
+		if err != nil || s.Jobs[d] != nil || len(deleted) > 0 && compareDigests(deleted[len(deleted)-1], d) >= 0 {
 			return nil, false, nil, errors.New("invalid journal deletion")
 		}
 		deleted = append(deleted, d)
 	}
-	canonical, err := json.Marshal(e)
-	if err != nil || !bytes.Equal(canonical, payload) || (e.Reset && len(deleted) != 0) {
-		return nil, false, nil, errors.New("noncanonical publication journal entry")
+	checkpoint := e.Kind == publicationpb.RecordKind_RECORD_KIND_CHECKPOINT
+	if checkpoint && len(deleted) != 0 {
+		return nil, false, nil, errors.New("publication checkpoint contains deletions")
 	}
-	return s, e.Reset, deleted, nil
+	return s, checkpoint, deleted, nil
 }
 
 // The returned offset is the end of the last complete durable frame. A partial
@@ -296,7 +276,7 @@ func openOutbox(root string, now time.Time) (_ *diskOutbox, _ *state, retErr err
 	} else if err != nil {
 		return nil, nil, err
 	} else {
-		b, readErr := io.ReadAll(io.LimitReader(f, maxJournalBytes+1))
+		b, readErr := readJournal(f)
 		if readErr != nil {
 			_ = f.Close()
 			return nil, nil, readErr
@@ -329,6 +309,27 @@ func openOutbox(root string, now time.Time) (_ *diskOutbox, _ *state, retErr err
 	return o, s, nil
 }
 
+// The journal is locked and bounded. Allocate its known length once instead of
+// growing a buffer during recovery, and reject a concurrent size change.
+func readJournal(f *os.File) ([]byte, error) {
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Size() < 0 || info.Size() > maxJournalBytes {
+		return nil, errors.New("invalid publication journal file size")
+	}
+	b := make([]byte, int(info.Size()))
+	if _, err := io.ReadFull(f, b); err != nil {
+		return nil, err
+	}
+	var extra [1]byte
+	if n, err := f.Read(extra[:]); n != 0 || err != io.EOF {
+		return nil, errors.New("publication journal changed during recovery")
+	}
+	return b, nil
+}
+
 func (o *diskOutbox) Save(s *state) error {
 	info, err := os.Lstat(o.root)
 	if err != nil {
@@ -342,24 +343,31 @@ func (o *diskOutbox) Save(s *state) error {
 			return err
 		}
 	}
-	delta := *s
-	delta.Jobs = make(map[cas.Digest]*job)
+	checkpoint := o.frames == 0 || o.frames >= maxJournalFrames
+	changed := s.Jobs
 	var deleted []cas.Digest
-	for d, j := range s.Jobs {
-		if old, ok := o.previous[d]; !ok || old != stamp(j) {
-			delta.Jobs[d] = j
+	var frame []byte
+	if !checkpoint {
+		changed = make(map[cas.Digest]*job)
+		for d, j := range s.Jobs {
+			if old, ok := o.previous[d]; !ok || old != stamp(j) {
+				changed[d] = j
+			}
 		}
-	}
-	for d := range o.previous {
-		if s.Jobs[d] == nil {
-			deleted = append(deleted, d)
+		for d := range o.previous {
+			if s.Jobs[d] == nil {
+				deleted = append(deleted, d)
+			}
 		}
+		delta := *s
+		delta.Jobs = changed
+		frame, err = encodeEntry(&delta, false, deleted)
+		if err != nil {
+			return err
+		}
+		checkpoint = len(frame) > maxJournalBytes-o.size
 	}
-	frame, err := encodeEntry(&delta, false, deleted)
-	if err != nil {
-		return err
-	}
-	if o.frames == 0 || o.frames >= maxJournalFrames || len(frame) > maxJournalBytes-o.size {
+	if checkpoint {
 		frame, err = encodeEntry(s, true, nil)
 		if err == nil {
 			err = o.replace(frame)
@@ -390,7 +398,11 @@ func (o *diskOutbox) Save(s *state) error {
 		o.frames++
 	}
 	// Advance the comparison cache only after the durable write succeeds.
-	for d, j := range delta.Jobs {
+	if checkpoint {
+		clear(o.previous)
+		changed = s.Jobs
+	}
+	for d, j := range changed {
 		o.previous[d] = stamp(j)
 	}
 	for _, d := range deleted {
@@ -405,7 +417,10 @@ func (o *diskOutbox) replace(frame []byte) error {
 	if err != nil {
 		return err
 	}
-	_, err = f.Write(append([]byte(journalMagic), frame...))
+	_, err = f.WriteString(journalMagic)
+	if err == nil {
+		_, err = f.Write(frame)
+	}
 	if err == nil {
 		err = f.Sync()
 	}

@@ -205,13 +205,28 @@ func benchmarkJournalBytes(b *testing.B, frameLimit, changedCount int) ([]byte, 
 
 // Recovery includes file reads, validation, replay, locking, and rebuilding the
 // comparison cache. Repeated reads use a warm filesystem cache, not cold media.
+// Fixed-frame cases preserve the same logical history across encodings. The
+// byte-limit case measures capacity, so its actual frame count may differ.
 func BenchmarkPublicationJournalRecovery8192(b *testing.B) {
 	for _, tc := range []struct {
 		name            string
 		frames, changed int
-	}{{"checkpoint", 1, 1}, {"1024_frames", maxJournalFrames, 1}, {"near_byte_limit", maxJournalFrames, 64}} {
+		byteLimit       bool
+	}{
+		{"checkpoint", 1, 1, false},
+		{"1024_frames", maxJournalFrames, 1, false},
+		{"512_frames_64_changes", 512, 64, false},
+		{"near_byte_limit", maxJournalFrames, 512, true},
+	} {
 		b.Run(tc.name, func(b *testing.B) {
 			data, frames := benchmarkJournalBytes(b, tc.frames, tc.changed)
+			if tc.byteLimit {
+				if len(data)*100 < maxJournalBytes*95 {
+					b.Fatalf("capacity fixture reached only %d bytes in %d frames", len(data), frames)
+				}
+			} else if frames != tc.frames {
+				b.Fatalf("fixed history stopped after %d of %d frames", frames, tc.frames)
+			}
 			root := b.TempDir()
 			if err := os.WriteFile(filepath.Join(root, "state.log"), data, 0600); err != nil {
 				b.Fatal(err)
@@ -233,6 +248,9 @@ func BenchmarkPublicationJournalRecovery8192(b *testing.B) {
 			}
 			b.ReportMetric(float64(len(data)), "journal-B")
 			b.ReportMetric(float64(frames), "frames")
+			if frames > 1 {
+				b.ReportMetric(float64(tc.changed), "changed-jobs/delta")
+			}
 		})
 	}
 }

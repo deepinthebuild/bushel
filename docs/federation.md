@@ -52,6 +52,22 @@ reported; corrupt complete records are rejected rather than silently resetting
 allowances. An incomplete final append is discarded on recovery; it could not
 have authorized a transfer because dispatch follows the completed durable save.
 
+Journal payloads use generated binary protobuf messages defined in
+[`journal.proto`](../internal/publication/pb/journal.proto): typed jobs, digest
+hash/size pairs, peer IDs, workspace associations, and sparse fairness charges.
+Times are required whole-second protobuf timestamps; hashes and multihashes are
+raw bytes. Each record carries a complete accounting header and either a full
+checkpoint or changed jobs plus deletions. A bounded wire scan checks collection
+sizes, field order, default omission, and minimal varints before generated
+decoding. Recovery then checks digest/peer validity and state transitions without
+re-encoding the record. Unknown fields and enum values fail closed.
+
+The file starts with `BUSHELJ1`. Each frame has a four-byte big-endian payload
+length, its four-byte complement, the payload's 32-byte SHA-256, and the protobuf
+payload. Before the first stable release, schema changes reuse this marker and
+do not add legacy readers. Recovery never replaces rejected state with fresh
+allowances.
+
 Receivers admit at most two concurrent blobs, eight control handlers, and a
 16-control burst followed by one control per second. Their process-local rolling
 hour budget defaults to 1 GiB (`-federation-receive-bytes-per-hour`), and the

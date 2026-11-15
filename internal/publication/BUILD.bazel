@@ -8,14 +8,19 @@ go_library(
         "publisher.go",
         "ready.go",
         "state.go",
+        "wire.go",
     ],
     importpath = "github.com/deepinthebuild/bushel/internal/publication",
     visibility = ["//:__subpackages__"],
     deps = [
         "//internal/cas",
+        "//internal/publication/pb",
         "//internal/workspace",
         "@com_github_gofrs_flock//:flock",
         "@com_github_libp2p_go_libp2p//core/peer",
+        "@org_golang_google_protobuf//encoding/protowire",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//types/known/timestamppb",
     ],
 )
 
@@ -32,9 +37,14 @@ go_test(
     embed = [":publication"],
     deps = [
         "//internal/cas",
+        "//internal/publication/pb",
         "//internal/workspace",
         "@com_github_libp2p_go_libp2p//core/peer",
         "@com_github_multiformats_go_multihash//:go-multihash",
         "@net_pgregory_rapid//:rapid",
+        "@org_golang_google_protobuf//encoding/protowire",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/known/timestamppb",
     ],
 )

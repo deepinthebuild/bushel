@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+package bushel.publication.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/deepinthebuild/bushel/internal/publication/pb;publicationpb";
+
+enum WorkspaceKind {
+  WORKSPACE_KIND_UNKNOWN = 0;
+  WORKSPACE_KIND_MAIN = 1;
+  WORKSPACE_KIND_CANONICAL = 2;
+  WORKSPACE_KIND_APPARENT = 3;
+}
+
+enum RecordKind {
+  RECORD_KIND_UNSPECIFIED = 0;
+  RECORD_KIND_CHECKPOINT = 1;
+  RECORD_KIND_DELTA = 2;
+}
+
+// Journal data is bounded and ordered by the publication package.
+message Digest {
+  bytes sha256 = 1; // Raw 32-byte SHA-256 digest.
+  uint64 size_bytes = 2;
+}
+
+message PeerID {
+  bytes multihash = 1; // Raw binary libp2p peer ID.
+}
+
+message Association {
+  WorkspaceKind kind = 1;
+  bytes partition_sha256 = 2; // Raw 32-byte local accounting partition.
+}
+
+message ServiceCredit {
+  uint32 bucket = 1; // Fairness bucket, from 0 through 255.
+  uint64 charged_bytes = 2;
+}
+
+message Job {
+  Digest digest = 1;
+  google.protobuf.Timestamp created = 2;
+  google.protobuf.Timestamp due = 3;
+  bool ready = 4;
+  repeated Association associations = 5; // Present kinds, in ascending order.
+  repeated PeerID attempted_peers = 6;
+  repeated PeerID completed_peers = 7;
+}
+
+// Timestamps are present and contain whole UTC seconds, including Unix epoch.
+message Snapshot {
+  uint32 version = 1;
+  google.protobuf.Timestamp clock = 2;
+  google.protobuf.Timestamp window = 3;
+  uint64 charged_bytes = 4;
+  uint32 charged_offers = 5;
+  google.protobuf.Timestamp next_start = 6;
+  repeated ServiceCredit served = 7; // Positive charges, in ascending bucket order.
+  uint64 expired = 8;
+  repeated Job jobs = 9;
+}
+
+message JournalEntry {
+  RecordKind kind = 1;
+  Snapshot state = 2;
+  repeated Digest deleted = 3;
+}
