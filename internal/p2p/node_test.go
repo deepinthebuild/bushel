@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/deepinthebuild/bushel/internal/cas"
+	"github.com/deepinthebuild/bushel/internal/teststorage"
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	"github.com/libp2p/go-libp2p"
@@ -40,7 +41,7 @@ func testNode(t testing.TB) (*Node, *cas.Store) {
 }
 
 func newTestNode(root string, limit int64) (*Node, *cas.Store, error) {
-	store, err := cas.NewStore(root, limit)
+	store, err := cas.NewStore(root, limit, testBackend())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -55,6 +56,11 @@ func newTestNode(root string, limit int64) (*Node, *cas.Store, error) {
 		return nil, nil, err
 	}
 	return n, store, nil
+}
+
+func testBackend() cas.Backend {
+	storage := teststorage.New()
+	return cas.Backend{Chunks: storage.Chunks, Mappings: storage.Mappings}
 }
 
 func peerInfo(n *Node) peer.AddrInfo {
@@ -89,7 +95,7 @@ func TestBitswapMultiChunkTransfer(t *testing.T) {
 	if err := sourceStore.Put(ctx, d, bytes.NewReader(data)); err != nil {
 		t.Fatal(err)
 	}
-	manifest, err := sourceStore.Manifest(d)
+	manifest, err := sourceStore.Manifest(ctx, d)
 	if err != nil || len(manifest.Chunks) < 7 {
 		t.Fatalf("chunking: %v %v", manifest, err)
 	}
@@ -164,7 +170,7 @@ func TestUntrustedManifestBoundsAndIdentity(t *testing.T) {
 			if err := dest.Fetch(ctx, d); !errors.Is(err, cas.ErrCorrupt) {
 				t.Fatalf("accepted malicious manifest: %v", err)
 			}
-			if _, err := store.Manifest(d); !errors.Is(err, cas.ErrNotFound) {
+			if _, err := store.Manifest(ctx, d); !errors.Is(err, cas.ErrNotFound) {
 				t.Fatalf("published invalid blob: %v", err)
 			}
 		})
@@ -180,7 +186,7 @@ func TestFullBlobVerificationAfterBitswap(t *testing.T) {
 	if err := sourceStore.Put(ctx, d, bytes.NewReader(data)); err != nil {
 		t.Fatal(err)
 	}
-	m, _ := sourceStore.Manifest(d)
+	m, _ := sourceStore.Manifest(ctx, d)
 	data[0] ^= 1
 	wanted := cas.Sum(data)
 	m.Blob = wanted
@@ -192,7 +198,7 @@ func TestFullBlobVerificationAfterBitswap(t *testing.T) {
 	if err := dest.Fetch(ctx, wanted); !errors.Is(err, cas.ErrCorrupt) {
 		t.Fatalf("accepted wrong complete blob: %v", err)
 	}
-	if _, err := destStore.Manifest(wanted); !errors.Is(err, cas.ErrNotFound) {
+	if _, err := destStore.Manifest(ctx, wanted); !errors.Is(err, cas.ErrNotFound) {
 		t.Fatalf("published unverified blob: %v", err)
 	}
 }
@@ -270,7 +276,7 @@ func TestFetchPreservesLocalImportErrors(t *testing.T) {
 			root := t.TempDir()
 			limit := int64(64 << 20)
 			if mode == "quota" {
-				limit = cas.ManifestHeaderSize
+				limit = 1024
 			}
 			dest, store, err := newTestNode(root, limit)
 			if err != nil {
@@ -362,9 +368,12 @@ func (s fakeSession) GetBlocks(context.Context, []cid.Cid) (<-chan blocks.Block,
 
 func TestChunkDigestVerification(t *testing.T) {
 	d := cas.Sum([]byte("expected"))
-	key := chunkCID(d.Hash)
+	key, err := sizedChunkCID(d)
+	if err != nil {
+		t.Fatal(err)
+	}
 	n := &Node{timeout: time.Second}
-	err := n.receiveWindow(context.Background(), fakeSession{forgedBlock{key, []byte("corrupt!")}}, []cid.Cid{key},
+	err = n.receiveWindow(context.Background(), fakeSession{forgedBlock{key, []byte("corrupt!")}}, []cid.Cid{key},
 		map[string]cas.Digest{key.KeyString(): d}, make(map[cas.Digest][]byte))
 	if !errors.Is(err, cas.ErrCorrupt) {
 		t.Fatalf("accepted bad chunk digest: %v", err)
@@ -417,7 +426,7 @@ func TestDiscoveryStartupWithLocalBootstrap(t *testing.T) {
 		default:
 		}
 	}})
-	store, err := cas.NewStore(t.TempDir(), 64<<20)
+	store, err := cas.NewStore(t.TempDir(), 64<<20, testBackend())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -575,7 +584,7 @@ func TestDiscoveryConnectionSaturationAndRecovery(t *testing.T) {
 		if err != nil {
 			t.Fatalf("connection %d: %v", i, err)
 		}
-		id := peer.ID(chunkCID(cas.Sum([]byte(fmt.Sprintf("fixture-%d", i))).Hash).Hash())
+		id := peer.ID(routingCID(cas.Sum([]byte(fmt.Sprintf("fixture-%d", i))).Hash).Hash())
 		if err := scope.SetPeer(id); err != nil {
 			scope.Done()
 			t.Fatal(err)
@@ -625,15 +634,19 @@ func TestWireAndCIDConstants(t *testing.T) {
 	if ManifestProtocol != "/bushel/manifest/1.0.0" || bitswapPrefix+"/ipfs/bitswap/1.2.0" != "/bushel/ipfs/bitswap/1.2.0" {
 		t.Fatal("wire protocol changed")
 	}
-	key := chunkCID(cas.Sum([]byte("hello")).Hash)
-	if key.String() != "bafkreibm6jg3ux5qumhcn2b3flc3tyu6dmlb4xa7u5bf44yegnrjhc4yeq" {
-		t.Fatalf("CID changed: %s", key)
+	routingKey := routingCID(cas.Sum([]byte("hello")).Hash)
+	if routingKey.String() != "bafkreibm6jg3ux5qumhcn2b3flc3tyu6dmlb4xa7u5bf44yegnrjhc4yeq" {
+		t.Fatalf("routing CID changed: %s", routingKey)
 	}
-	if _, ok := chunkHash(cid.NewCidV0(key.Hash())); ok {
+	if _, err := sizedChunkDigest(cid.NewCidV0(routingKey.Hash())); err == nil {
 		t.Fatal("accepted non-v1 CID")
 	}
 	if rendezvousCID.String() != "bafkreihn2psfrf4egr4yjmnp4vckba2frqub2dwm4obcxmggytceetbgqq" {
 		t.Fatal("rendezvous identity changed")
+	}
+	key, err := sizedChunkCID(cas.Sum([]byte("hello")))
+	if err != nil {
+		t.Fatal(err)
 	}
 	ch := (noProviders{}).FindProvidersAsync(context.Background(), key, 1)
 	select {

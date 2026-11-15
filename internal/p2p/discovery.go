@@ -16,7 +16,7 @@ import (
 	ma "github.com/multiformats/go-multiaddr"
 )
 
-var rendezvousCID = chunkCID(cas.Sum([]byte("bushel:peer-rendezvous:v1")).Hash)
+var rendezvousCID = routingCID(cas.Sum([]byte("bushel:peer-rendezvous:v1")).Hash)
 
 const discoveryConnections = 64
 

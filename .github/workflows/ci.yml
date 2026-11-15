@@ -55,6 +55,8 @@ jobs:
             'internal/cas FuzzParseDigest' \
             'internal/cas FuzzChunkSegmentation' \
             'internal/cas FuzzCatalogDigest' \
+            'internal/cas FuzzCatalogRecord' \
+            'internal/p2p FuzzSizedCIDCanonicalRoundTrip' \
             'internal/reapi FuzzParseResource' \
             'internal/reapi FuzzUploadTransition'; do
             read -r package fuzz <<< "$target"

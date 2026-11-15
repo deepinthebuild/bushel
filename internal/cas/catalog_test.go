@@ -3,17 +3,25 @@ package cas
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
+	"time"
 
+	bbdigest "github.com/buildbarn/bb-storage/pkg/digest"
+	"github.com/deepinthebuild/bushel/internal/teststorage"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"pgregory.net/rapid"
 )
 
@@ -21,21 +29,16 @@ func TestCatalogValidatesMetadataAcrossBatches(t *testing.T) {
 	s := testStore(t)
 	want := make(map[Digest]bool)
 	for i := range 2*catalogBatchSize + 3 {
-		d := Sum([]byte(fmt.Sprintf("catalog-%d", i)))
-		m := Manifest{Blob: d, Chunks: []Digest{d}}
-		b, err := m.MarshalBinary()
-		if err != nil {
-			t.Fatal(err)
-		}
-		// Catalog walks validate committed metadata without opening chunks.
-		if err := os.WriteFile(s.manifestPath(d), b, 0600); err != nil {
+		data := []byte(fmt.Sprintf("catalog-%d", i))
+		d := Sum(data)
+		if err := s.Put(context.Background(), d, bytes.NewReader(data)); err != nil {
 			t.Fatal(err)
 		}
 		want[d] = true
 	}
 	wrong := Sum([]byte("wrong identity"))
 	other := Sum([]byte("another identity"))
-	otherWire, _ := (Manifest{Blob: other, Chunks: []Digest{other}}).MarshalBinary()
+	otherWire := (catalogRecord{digest: other, generation: 1}).marshal()
 	for name, data := range map[string][]byte{
 		"malformed": otherWire,
 		other.Hex() + "-0" + strconv.FormatInt(other.Size, 10): otherWire,
@@ -43,11 +46,11 @@ func TestCatalogValidatesMetadataAcrossBatches(t *testing.T) {
 		Sum(nil).Key():                 []byte("truncated"),
 		Sum([]byte("truncated")).Key(): otherWire[:len(otherWire)-1],
 	} {
-		if err := os.WriteFile(filepath.Join(s.root, "manifests", name), data, 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(s.root, "catalog", name), data, 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := os.Mkdir(s.manifestPath(Sum([]byte("directory"))), 0700); err != nil {
+	if err := os.Mkdir(s.catalogPath(Sum([]byte("directory"))), 0700); err != nil {
 		t.Fatal(err)
 	}
 	got := make(map[Digest]bool)
@@ -92,7 +95,7 @@ func TestCatalogCancellationAndErrors(t *testing.T) {
 		t.Fatalf("callback error lost: %v", err)
 	}
 	empty := testStore(t)
-	if err := os.Remove(filepath.Join(empty.root, "manifests")); err != nil {
+	if err := os.Remove(filepath.Join(empty.root, "catalog")); err != nil {
 		t.Fatal(err)
 	}
 	if err := empty.WalkCommitted(context.Background(), func(Digest) error { return nil }); !errors.Is(err, os.ErrNotExist) {
@@ -130,6 +133,134 @@ func FuzzCatalogDigest(f *testing.F) {
 			t.Fatal("accepted a noncanonical catalog identity")
 		}
 	})
+}
+
+func TestPropertyCatalogRecordRoundTrip(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		data := rapid.SliceOfN(rapid.Byte(), 0, 1024).Draw(t, "data")
+		r := catalogRecord{digest: Sum(data), generation: rapid.Uint64Range(1, math.MaxUint64).Draw(t, "generation")}
+		wire := r.marshal()
+		got, err := parseCatalogRecord(wire)
+		if err != nil || got != r || len(wire) != 56 || string(wire[:8]) != "BSHLC001" {
+			t.Fatalf("catalog record round trip: %v", err)
+		}
+		badGeneration := bytes.Clone(wire)
+		binary.BigEndian.PutUint64(badGeneration[48:56], 0)
+		badSize := bytes.Clone(wire)
+		binary.BigEndian.PutUint64(badSize[40:48], uint64(MaxBlobSize)+1)
+		for _, bad := range [][]byte{wire[:55], append(bytes.Clone(wire), 0), badGeneration, badSize} {
+			if _, err := parseCatalogRecord(bad); !errors.Is(err, ErrCorrupt) {
+				t.Fatalf("accepted malformed catalog record: %v", err)
+			}
+		}
+	})
+}
+
+func FuzzCatalogRecord(f *testing.F) {
+	f.Add((catalogRecord{digest: Sum(nil), generation: 1}).marshal())
+	f.Add((catalogRecord{digest: Sum([]byte("seed")), generation: math.MaxUint64}).marshal())
+	f.Add([]byte("BSHLC001"))
+	f.Fuzz(func(t *testing.T, wire []byte) {
+		r, err := parseCatalogRecord(wire)
+		if err == nil && (r.digest.Validate() != nil || r.generation == 0 || !bytes.Equal(r.marshal(), wire)) {
+			t.Fatal("accepted a noncanonical catalog record")
+		}
+	})
+}
+
+func TestCatalogTransientProbeRetainsRecord(t *testing.T) {
+	s, backend := testStoreWithBackend(t)
+	data := []byte("retry after backend outage")
+	d := Sum(data)
+	if err := s.Put(context.Background(), d, bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(s.catalogPath(d))
+	if err != nil {
+		t.Fatal(err)
+	}
+	failure := status.Error(codes.Unavailable, "temporary backend outage")
+	backend.Fail(teststorage.ChunkFindMissing, 0, failure)
+	if err := s.WalkCommitted(context.Background(), func(Digest) error { return nil }); !errors.Is(err, failure) {
+		t.Fatalf("transient failure was hidden: %v", err)
+	}
+	after, err := os.ReadFile(s.catalogPath(d))
+	if err != nil || !bytes.Equal(after, before) {
+		t.Fatalf("transient error discarded or changed catalog record: %v", err)
+	}
+	var count int
+	if err := s.WalkCommitted(context.Background(), func(got Digest) error {
+		if got != d {
+			t.Error("unexpected catalog entry")
+		}
+		count++
+		return nil
+	}); err != nil || count != 1 {
+		t.Fatalf("recovery: count %d, error %v", count, err)
+	}
+}
+
+func TestCatalogStaleNegativeCannotPruneConcurrentRepair(t *testing.T) {
+	s, backend := testStoreWithBackend(t)
+	data := fixture(2*MinChunkSize + 1)
+	d := Sum(data)
+	if err := s.Put(context.Background(), d, bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	old, err := readCatalogRecord(s.catalogPath(d))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend.EvictMapping(backendDigest(d))
+	entered, release := make(chan struct{}), make(chan struct{})
+	var intercepted atomic.Bool
+	backend.SetHook(func(ctx context.Context, op teststorage.Operation, _ bbdigest.Digest) error {
+		if op == teststorage.MappingGet && intercepted.CompareAndSwap(false, true) {
+			close(entered)
+			select {
+			case <-release:
+				return status.Error(codes.NotFound, "mapping was missing when probe began")
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		return nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	done := make(chan error, 1)
+	go func() { done <- s.WalkCommitted(ctx, func(Digest) error { return nil }) }()
+	joined := false
+	defer func() {
+		cancel()
+		if !joined {
+			<-done
+		}
+	}()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("catalog did not probe the missing mapping")
+	}
+	if err := s.Put(ctx, d, bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	err = <-done
+	joined = true
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := readCatalogRecord(s.catalogPath(d))
+	if err != nil || current.digest != d || current.generation <= old.generation {
+		t.Fatalf("stale probe removed a newer publication: %v", err)
+	}
+	if s.used != catalogRecordSize {
+		t.Fatalf("stale prune damaged accounting: %d", s.used)
+	}
+	var count int
+	if err := s.WalkCommitted(context.Background(), func(Digest) error { count++; return nil }); err != nil || count != 1 {
+		t.Fatalf("repaired publication was not discoverable: %v", err)
+	}
 }
 
 func TestPropertyPublicationOverflowRecoversFromCatalog(t *testing.T) {
@@ -213,7 +344,8 @@ func TestPublicationUnsubscribeDuringUploads(t *testing.T) {
 
 func TestStoreReopenAccountsMultipleDirectoryBatches(t *testing.T) {
 	root := t.TempDir()
-	s, err := NewStore(root, 1<<20)
+	fake := teststorage.New()
+	s, err := NewStore(root, 1<<20, testBackend(fake))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,12 +360,12 @@ func TestStoreReopenAccountsMultipleDirectoryBatches(t *testing.T) {
 		if err := s.Put(context.Background(), Sum(data), bytes.NewReader(data)); err != nil {
 			t.Fatal(err)
 		}
-		used += int64(len(data) + ManifestHeaderSize + 36)
+		used += catalogRecordSize
 	}
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	s, err = NewStore(root, used)
+	s, err = NewStore(root, used, testBackend(fake))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +379,7 @@ func TestStoreReopenAccountsMultipleDirectoryBatches(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	s, err = NewStore(root, used+ManifestHeaderSize+37)
+	s, err = NewStore(root, used+catalogRecordSize+1, testBackend(fake))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,10 +389,10 @@ func TestStoreReopenAccountsMultipleDirectoryBatches(t *testing.T) {
 }
 
 func TestStoreRejectsUnexpectedNestedDirectories(t *testing.T) {
-	for _, directory := range []string{"chunks", "manifests"} {
+	for _, directory := range []string{"catalog"} {
 		t.Run(directory, func(t *testing.T) {
 			root := t.TempDir()
-			s, err := NewStore(root, 1<<20)
+			s, err := NewStore(root, 1<<20, testBackend(teststorage.New()))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -271,14 +403,14 @@ func TestStoreRejectsUnexpectedNestedDirectories(t *testing.T) {
 			if err := os.Mkdir(unexpected, 0700); err != nil {
 				t.Fatal(err)
 			}
-			if reopened, err := NewStore(root, 1<<20); err == nil {
+			if reopened, err := NewStore(root, 1<<20, testBackend(teststorage.New())); err == nil {
 				_ = reopened.Close()
 				t.Fatal("accepted directory in a flat CAS layout")
 			}
 			if err := os.Remove(unexpected); err != nil {
 				t.Fatal(err)
 			}
-			s, err = NewStore(root, 1<<20)
+			s, err = NewStore(root, 1<<20, testBackend(teststorage.New()))
 			if err != nil {
 				t.Fatalf("failed accounting leaked a lock or directory handle: %v", err)
 			}
@@ -290,19 +422,16 @@ func TestStoreRejectsUnexpectedNestedDirectories(t *testing.T) {
 }
 
 func TestStoreRejectsSymlinkedReservedDirectories(t *testing.T) {
-	for _, directory := range []string{"chunks", "manifests"} {
+	for _, directory := range []string{"catalog"} {
 		t.Run(directory, func(t *testing.T) {
 			root, outside := t.TempDir(), t.TempDir()
-			s, err := NewStore(root, 1<<20)
+			s, err := NewStore(root, 1<<20, testBackend(teststorage.New()))
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer func() { _ = s.Close() }()
 			d := Sum([]byte("outside fixture"))
-			wire, err := (Manifest{Blob: d, Chunks: []Digest{d}}).MarshalBinary()
-			if err != nil {
-				t.Fatal(err)
-			}
+			wire := (catalogRecord{digest: d, generation: 1}).marshal()
 			want := map[string][]byte{"keep": []byte("keep"), d.Key(): wire}
 			for name, data := range want {
 				if err := os.WriteFile(filepath.Join(outside, name), data, 0600); err != nil {
@@ -320,7 +449,7 @@ func TestStoreRejectsSymlinkedReservedDirectories(t *testing.T) {
 				}
 				t.Fatal(err)
 			}
-			if directory == "manifests" {
+			if directory == "catalog" {
 				err := s.WalkCommitted(context.Background(), func(Digest) error {
 					t.Error("catalog visited a manifest outside the store")
 					return nil
@@ -332,7 +461,7 @@ func TestStoreRejectsSymlinkedReservedDirectories(t *testing.T) {
 			if err := s.Close(); err != nil {
 				t.Fatal(err)
 			}
-			if reopened, err := NewStore(root, 1<<20); !errors.Is(err, ErrInvalid) {
+			if reopened, err := NewStore(root, 1<<20, testBackend(teststorage.New())); !errors.Is(err, ErrInvalid) {
 				if reopened != nil {
 					_ = reopened.Close()
 				}
@@ -357,7 +486,7 @@ func TestStoreRejectsSymlinkedReservedDirectories(t *testing.T) {
 			if err := os.Mkdir(reserved, 0700); err != nil {
 				t.Fatal(err)
 			}
-			reopened, err := NewStore(root, 1<<20)
+			reopened, err := NewStore(root, 1<<20, testBackend(teststorage.New()))
 			if err != nil {
 				t.Fatalf("rejected link leaked the process lock: %v", err)
 			}

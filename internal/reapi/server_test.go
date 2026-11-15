@@ -13,6 +13,7 @@ import (
 
 	repb "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
 	"github.com/deepinthebuild/bushel/internal/cas"
+	"github.com/deepinthebuild/bushel/internal/teststorage"
 	bspb "google.golang.org/genproto/googleapis/bytestream"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -24,7 +25,8 @@ import (
 
 func clients(t *testing.T, fetchers ...Fetcher) (context.Context, repb.ContentAddressableStorageClient, bspb.ByteStreamClient, repb.CapabilitiesClient) {
 	t.Helper()
-	store, err := cas.NewStore(t.TempDir(), 64<<20)
+	backend := teststorage.New()
+	store, err := cas.NewStore(t.TempDir(), 64<<20, cas.Backend{Chunks: backend.Chunks, Mappings: backend.Mappings})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +309,8 @@ func (s *stalledUpload) Recv() (*bspb.WriteRequest, error) {
 func (s *stalledUpload) SendAndClose(r *bspb.WriteResponse) error { s.response = r; return nil }
 
 func TestConcurrentCommitNotificationFinishesUpload(t *testing.T) {
-	store, err := cas.NewStore(t.TempDir(), 64<<20)
+	backend := teststorage.New()
+	store, err := cas.NewStore(t.TempDir(), 64<<20, cas.Backend{Chunks: backend.Chunks, Mappings: backend.Mappings})
 	if err != nil {
 		t.Fatal(err)
 	}

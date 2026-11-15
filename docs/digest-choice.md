@@ -1,7 +1,8 @@
 # Digest choice: SHA-256
 
-Bushel v1 uses SHA-256 for blobs and chunks, and SHA2-256 raw CIDv1 blocks.
-The choice is fixed for v1. There is no runtime digest-algorithm option.
+Bushel uses SHA-256 for blobs and chunks. Chunk CIDs carry that hash plus size
+using the [Bushel multihash](protocol-v1.md); routing CIDs use standard SHA2-256.
+There is no runtime digest-algorithm option.
 
 Compared Go's `crypto/sha256` with `github.com/zeebo/blake3` v0.2.4 using reused
 streaming hashers, single-threaded writes, three 300 ms samples per size. Median

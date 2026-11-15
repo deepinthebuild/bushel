@@ -3,7 +3,6 @@ package p2p
 import (
 	"context"
 	"encoding/binary"
-	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/libp2p/go-libp2p/p2p/host/peerstore/pstoremem"
 	connmgr "github.com/libp2p/go-libp2p/p2p/net/connmgr"
+	"github.com/multiformats/go-multihash"
 )
 
 const (
@@ -36,6 +36,13 @@ type blobProviderRouter interface {
 	FindProvidersAsync(context.Context, cid.Cid, int) <-chan peer.AddrInfo
 }
 
+// Discovery and provider records use standard SHA2-256 CIDs. The sized
+// multihash is reserved for content carried by Bushel's Bitswap protocol.
+func routingCID(hash [32]byte) cid.Cid {
+	mh, _ := multihash.Encode(hash[:], multihash.SHA2_256)
+	return cid.NewCidV1(cid.Raw, mh)
+}
+
 func blobProviderCID(d cas.Digest) (cid.Cid, error) {
 	if err := d.Validate(); err != nil {
 		return cid.Undef, err
@@ -44,7 +51,7 @@ func blobProviderCID(d cas.Digest) (cid.Cid, error) {
 	copy(data[:], providerDomain)
 	copy(data[len(providerDomain):], d.Hash[:])
 	binary.BigEndian.PutUint64(data[len(providerDomain)+32:], uint64(d.Size))
-	return chunkCID(cas.Sum(data[:]).Hash), nil
+	return routingCID(cas.Sum(data[:]).Hash), nil
 }
 
 func routingBucketSize(maxPeers int) int { return min(8, maxPeers/8) }
@@ -95,13 +102,14 @@ func (n *Node) initRouting(cfg Config) error {
 }
 
 func (n *Node) announceBlob(ctx context.Context, d cas.Digest) error {
-	// A manifest can disappear after a queued hint. Stale announcements are
-	// ordinary availability misses, but avoid creating one when already known.
-	if _, err := n.store.Manifest(d); err != nil {
-		if errors.Is(err, cas.ErrNotFound) || errors.Is(err, cas.ErrCorrupt) {
-			return nil
-		}
+	// Backend eviction can outlive a queued hint or catalog scan. Check both
+	// the mapping and its chunks again before advertising availability.
+	present, err := n.store.Committed(ctx, d)
+	if err != nil {
 		return err
+	}
+	if !present {
+		return nil
 	}
 	key, err := blobProviderCID(d)
 	if err != nil {
@@ -177,7 +185,7 @@ func (n *Node) AnnouncementStats() AnnouncerStats {
 func (n *Node) reportRoutingPressure() {
 	tick := time.NewTicker(time.Minute)
 	defer tick.Stop()
-	var previous uint64
+	var previous, previousProbeFailures uint64
 	for {
 		select {
 		case <-n.ctx.Done():
@@ -191,6 +199,10 @@ func (n *Node) reportRoutingPressure() {
 			}
 			if a := n.announcer.Load(); a != nil {
 				progress := a.Stats()
+				if progress.ProbeFailures != 0 && progress.ProbeFailures != previousProbeFailures {
+					slog.Warn("Backend probes failed during catalog renewal", "failed_probes", progress.ProbeFailures)
+				}
+				previousProbeFailures = progress.ProbeFailures
 				duration := progress.LastSweepDuration
 				if progress.Sweeping {
 					duration = a.opts.Clock.Now().Sub(progress.SweepStarted)

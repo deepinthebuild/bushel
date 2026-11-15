@@ -1,7 +1,8 @@
-# Bushel v1
+# Bushel wire format (provisional)
 
 Integers are unsigned big-endian. SHA-256 values are 32 raw bytes. No native Go
-serialization appears on the wire. Incompatible changes get a new protocol ID.
+serialization appears on the wire. Before the first stable release, incompatible
+changes may reuse these protocol IDs. The stable release will freeze this contract.
 
 RepMaxCDC: Buildbarn's `NewRepMaxContentDefinedChunker`,
 `FastContentDefinedChunkerGearTable` from go-cdc v0.0.10,
@@ -12,8 +13,17 @@ chunks. All blobs use this pipeline, even when only one chunk results.
 Manifest: `BSHLM001` (8 bytes), blob SHA-256 (32), blob size (8), chunk count (4),
 then ordered entries of chunk SHA-256 (32) and chunk size (4). No trailing bytes.
 Maximum blob size 8 GiB, maximum chunk count 32768; validate total sizes exactly.
-Chunks use CIDv1, raw codec, SHA2-256. Manifests are bounded to 1179700 bytes.
+Manifests are bounded to 1179700 bytes.
 Canonical chunking and a full blob hash are checked when importing a manifest.
+
+Chunk CIDs use CIDv1, raw codec (`0x55`), and Bushel's private-use multihash
+code `0x300001`. Its 40-byte digest is `SHA-256(chunk) || uint64be(chunk size)`;
+the complete CID is 47 bytes. Only digest lengths of 40 are accepted. Verifiers
+compute both fields from the received bytes, including when decoding Bitswap
+payload prefixes. A REAPI hash/size pair converts directly to this CID without
+reading the chunk. Sizes must be 1 through 524287 bytes. This is a Bushel
+extension inside standard Bitswap messages; generic IPFS peers do not implement
+its verifier. Rendezvous and provider routing CIDs keep standard SHA2-256.
 
 Lookup stream `/bushel/manifest/1.0.0`: client sends blob hash (32) and size (8).
 Server returns a 4-byte manifest length, then exactly that many bytes. Zero means

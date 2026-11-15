@@ -160,10 +160,10 @@ func newNode(ctx context.Context, cfg Config, filter func([]ma.Multiaddr) []ma.M
 	n.peerstore = nil
 	n.host.SetStreamHandler(ManifestProtocol, n.serveManifest)
 	n.bitswap = bitswap.New(ctx, bsnet.NewFromIpfsHost(n.host, bsnet.Prefix(bitswapPrefix), bsnet.SupportedProtocols([]protocol.ID{bsnet.ProtocolBitswap})),
-		noProviders{}, readStore{cfg.Store}, bitswap.EngineBlockstoreWorkerCount(4), bitswap.EngineTaskWorkerCount(4), bitswap.TaskWorkerCount(4),
-		bitswap.MaxOutstandingBytesPerPeer(2<<20), bitswap.MaxQueuedWantlistEntriesPerPeer(256), bitswap.MaxCidSize(36),
+		noProviders{}, readStore{store: cfg.Store, timeout: cfg.RequestTimeout}, bitswap.EngineBlockstoreWorkerCount(4), bitswap.EngineTaskWorkerCount(4), bitswap.TaskWorkerCount(4),
+		bitswap.MaxOutstandingBytesPerPeer(2<<20), bitswap.MaxQueuedWantlistEntriesPerPeer(256), bitswap.MaxCidSize(sizedChunkCIDSize),
 		bitswap.WithTargetMessageSize(1<<20), bitswap.WithoutDuplicatedBlockStats(),
-		bitswap.WithPeerBlockRequestFilter(func(_ peer.ID, c cid.Cid) bool { _, ok := chunkHash(c); return ok }))
+		bitswap.WithPeerBlockRequestFilter(func(_ peer.ID, c cid.Cid) bool { _, err := sizedChunkDigest(c); return err == nil }))
 	if err := n.initRouting(cfg); err != nil {
 		return nil, err
 	}
@@ -286,7 +286,12 @@ func (n *Node) serveManifest(s network.Stream) {
 		return
 	}
 	defer s.Close()
-	_ = s.SetDeadline(time.Now().Add(n.timeout))
+	ctx, cancel := context.WithTimeout(n.ctx, n.timeout)
+	defer cancel()
+	stop := context.AfterFunc(ctx, func() { _ = s.Reset() })
+	defer stop()
+	deadline, _ := ctx.Deadline()
+	_ = s.SetDeadline(deadline)
 	var request [40]byte
 	if _, err := io.ReadFull(s, request[:]); err != nil {
 		_ = s.Reset()
@@ -303,7 +308,7 @@ func (n *Node) serveManifest(s network.Stream) {
 		_ = s.Reset()
 		return
 	}
-	m, err := n.store.Manifest(d)
+	m, err := n.store.Manifest(ctx, d)
 	var payload []byte
 	if err == nil {
 		payload, err = m.MarshalBinary()
@@ -506,7 +511,7 @@ func (n *Node) importManifest(ctx context.Context, m cas.Manifest) error {
 			keys := make([]cid.Cid, 0, end-next)
 			window = make(map[cas.Digest][]byte, end-next)
 			for _, c := range m.Chunks[next:end] {
-				local, err := n.store.Block(c.Hash)
+				local, err := n.store.Block(ctx, c)
 				if err != nil && !errors.Is(err, cas.ErrNotFound) && !errors.Is(err, cas.ErrCorrupt) {
 					return nil, err
 				}
@@ -514,7 +519,10 @@ func (n *Node) importManifest(ctx context.Context, m cas.Manifest) error {
 					window[c] = local
 					continue
 				}
-				key := chunkCID(c.Hash)
+				key, err := sizedChunkCID(c)
+				if err != nil {
+					return nil, err
+				}
 				if _, ok := wanted[key.KeyString()]; !ok {
 					keys = append(keys, key)
 					wanted[key.KeyString()] = c
