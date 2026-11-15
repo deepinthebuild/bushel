@@ -7,6 +7,10 @@ bazel test //...
 bazel run @rules_go//go -- vet ./...
 ```
 
+Use `bazel run //cmd/bushel -- ...` to launch the daemon. The checked-in
+`run --run_in_cwd` preserves the invocation directory for relative data paths.
+Use Bazel targets for local execution; do not invoke build-output paths directly.
+
 Use Bazelisk to respect `.bazelversion`; `MODULE.bazel` pins the Go SDK and rules.
 Windows needs Git Bash available to Bazel (`BAZEL_SH` can select it).
 Run `bazel test --config=race //...` on Linux for concurrency changes.

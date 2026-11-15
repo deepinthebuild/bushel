@@ -4,7 +4,7 @@ A peer-to-peer Bazel content-addressable store, written in Go. Bushel bridges
 REAPI gRPC to Bitswap, with RepMaxCDC chunks and SHA-256 verification.
 
 Install [Bazelisk](https://github.com/bazelbuild/bazelisk#installation) as
-`bazel`. The checkout pins Bazel 8 LTS and downloads its Go SDK automatically.
+`bazel`. The checkout pins Bazel 9.3.2 and downloads its Go SDK automatically.
 Windows also needs Git Bash; set `BAZEL_SH` to that shell if another Bash is
 selected from `PATH`. Build and test from the checkout root:
 
@@ -13,9 +13,14 @@ bazel build //cmd/bushel
 bazel test //...
 ```
 
-Run `bazel-bin/cmd/bushel/bushel_/bushel` from the checkout root; on Windows,
-use `bazel-bin/cmd/bushel/bushel_/bushel.exe`. The examples below use the former.
-Running the built binary keeps relative state paths anchored to the checkout.
+Run from the checkout root:
+
+```sh
+bazel run //cmd/bushel
+```
+
+The checked-in `.bazelrc` enables `--run_in_cwd`, keeping relative state paths
+anchored to the directory where you invoke Bazel.
 
 The daemon serves plaintext gRPC on `127.0.0.1:8980` and peer traffic on TCP
 8981. It prints its peer addresses at startup. State and its generated peer key
@@ -31,20 +36,20 @@ provides integrity, while peers holding content can redistribute it.
 For a local two-node network, start the first node:
 
 ```sh
-bazel-bin/cmd/bushel/bushel_/bushel -discovery=false -data-dir=data/node-a -p2p-listen=/ip4/127.0.0.1/tcp/8981
+bazel run //cmd/bushel -- -discovery=false -data-dir=data/node-a '-p2p-listen=/ip4/127.0.0.1/tcp/8981'
 ```
 
 Use its printed peer ID when starting the second node:
 
 ```sh
-bazel-bin/cmd/bushel/bushel_/bushel -discovery=false -data-dir=data/node-b -grpc-listen=127.0.0.1:8982 -p2p-listen=/ip4/127.0.0.1/tcp/8983 -peer=/ip4/127.0.0.1/tcp/8981/p2p/PEER_ID
+bazel run //cmd/bushel -- -discovery=false -data-dir=data/node-b '-grpc-listen=127.0.0.1:8982' '-p2p-listen=/ip4/127.0.0.1/tcp/8983' '-peer=/ip4/127.0.0.1/tcp/8981/p2p/PEER_ID'
 ```
 
 `-peer`, `-bootstrap`, and `-p2p-listen` are repeatable. `-instance` selects a
 REAPI instance; the default is empty. `-disk-bytes` bounds storage and upload
 staging (20 GiB by default). Verified read scratch has a separate equal budget,
 so total data usage is bounded to twice that setting, plus metadata and keys.
-Pass `-help` to the built binary for all flags.
+Use `bazel run //cmd/bushel -- -help` for all flags.
 
 This first version provides SHA-256 CAS, Capabilities, ByteStream, and GetTree.
 It verifies chunks and reconstructed blobs before returning bytes to clients.
