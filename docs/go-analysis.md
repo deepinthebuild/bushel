@@ -4,16 +4,16 @@ target sources, platform, build tags, dependency exports, and cached analyzer
 facts. Both internal and external test packages are checked. No `go list` or
 module-cache lookup is needed during these actions.
 
-`BUILD.bazel` explicitly selects the 35 analyzers in
-[Go 1.27.4's default vet suite](https://github.com/golang/go/blob/go1.27.4/src/cmd/vendor/golang.org/x/tools/go/analysis/suite/vet/vet.go).
-Keep that list aligned when upgrading the SDK; `nogo(vet = True)` selects only
-five checks and `TOOLS_NOGO` includes a different set. Analyzer implementations
-use the `golang.org/x/tools` version pinned for the Bazel tool in `MODULE.bazel`,
-kept aligned with `go.mod` and resolved by Bzlmod.
+`MODULE.bazel` selects the upstream `@rules_go//:tools_nogo` preset. Its checks
+follow the pinned rules_go release and intentionally differ from the SDK's
+default `go vet` suite; no separate analyzer list is maintained. Analyzer
+implementations use the `golang.org/x/tools` version resolved by the shared
+Go dependency graph.
 
-The narrow rules_go patch adapts its facts decoder to the newer `x/tools` API,
-reusing the existing importer's canonical package objects. Remove it when a
-rules_go upgrade includes that adapter.
+The narrow rules_go patch adapts its facts decoder to the newer `x/tools` API
+required by libp2p, reusing the existing importer's canonical package objects.
+Remove it when a rules_go upgrade includes that adapter; see
+[issue #24](https://github.com/deepinthebuild/bushel/issues/24).
 
 The scope includes generated first-party Go code. External dependencies supply
 facts but their diagnostics are excluded.
