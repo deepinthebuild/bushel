@@ -24,8 +24,11 @@ Empty and single-chunk blobs require no CMS entry. Peer chunk CIDs carry both
 SHA-256 and size, so they convert directly to Buildbarn digest keys.
 
 Uploads are staged and fully verified before backend writes. Chunks are written
-first, mappings last. Failed or ambiguous writes can leave verified orphan chunks
-or a complete blob without an announcement record; retries are safe. Reads verify
+first, mappings last. Repeated chunks in one upload are staged and written once;
+each later upload writes its distinct chunks again so it can repair corruption or
+eviction even when configured caches report stale presence. Staging reservation
+still covers the full upload size. Failed or ambiguous writes can leave verified
+orphan chunks or a complete blob without an announcement record; retries are safe. Reads verify
 chunk digests, canonical boundaries, and the complete blob into bounded scratch
 before returning bytes. Presence caches and provider records are only hints:
 independent CS/CMS eviction and stale positives are ordinary misses.

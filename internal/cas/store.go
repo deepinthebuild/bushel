@@ -205,7 +205,17 @@ func (s *Store) put(ctx context.Context, d Digest, r io.Reader, expected *Manife
 			retErr = errors.Join(retErr, err)
 		}
 	}()
-	m, err := Chunk(ctx, d, r, func(c Digest, b []byte) error { return os.WriteFile(stageChunkPath(stage, c), b, 0600) })
+	staged := make(map[Digest]struct{})
+	m, err := Chunk(ctx, d, r, func(c Digest, b []byte) error {
+		if _, ok := staged[c]; ok {
+			return nil
+		}
+		if err := os.WriteFile(stageChunkPath(stage, c), b, 0600); err != nil {
+			return err
+		}
+		staged[c] = struct{}{}
+		return nil
+	})
 	if err != nil {
 		return err
 	}

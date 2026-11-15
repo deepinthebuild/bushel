@@ -259,3 +259,56 @@ func TestValidateCapabilitiesPreservesDigestAndChunkingContract(t *testing.T) {
 		t.Fatal("accepted absent capabilities")
 	}
 }
+
+// BenchmarkNativeRepeatedUpload measures the complete verified upload path with
+// the persistent default backend. Run this benchmark in its own test process.
+func BenchmarkNativeRepeatedUpload(b *testing.B) {
+	benchmarkNativeUpload(b, make([]byte, 8<<20))
+}
+
+// BenchmarkNativeDuplicateUpload uses deterministic pseudorandom data, so its
+// chunks are distinct even though successive uploads have the same blob digest.
+func BenchmarkNativeDuplicateUpload(b *testing.B) {
+	benchmarkNativeUpload(b, storageFixture())
+}
+
+func benchmarkNativeUpload(b *testing.B, data []byte) {
+	// Buildbarn mappings outlive RunLocal. Bazel cleans this directory only
+	// after the benchmark process exits, including on Windows.
+	tmp := os.Getenv("TEST_TMPDIR")
+	if tmp == "" {
+		b.Fatal("run this benchmark with Bazel so its temporary files outlive the process")
+	}
+	root, err := os.MkdirTemp(tmp, "native-bench-")
+	if err != nil {
+		b.Fatal(err)
+	}
+	cfg, err := Default(filepath.Join(root, "backend"), 64<<20)
+	if err != nil {
+		b.Fatal(err)
+	}
+	d := cas.Sum(data)
+	err = program.RunLocal(context.Background(), func(ctx context.Context, _, dependencies program.Group) (retErr error) {
+		backend, err := New(ctx, dependencies, cfg, "")
+		if err != nil {
+			return err
+		}
+		store, err := cas.NewStore(filepath.Join(root, "state"), 64<<20, backend)
+		if err != nil {
+			return err
+		}
+		defer func() { retErr = errors.Join(retErr, store.Close()) }()
+		b.SetBytes(int64(len(data)))
+		b.ReportAllocs()
+		for b.Loop() {
+			if err := store.Put(ctx, d, bytes.NewReader(data)); err != nil {
+				return err
+			}
+		}
+		b.StopTimer()
+		return nil
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+}

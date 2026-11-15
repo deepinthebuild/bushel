@@ -410,3 +410,52 @@ func TestBackendReadRejectsNoncanonicalMapping(t *testing.T) {
 		t.Fatalf("noncanonical external mapping exposed a reader: %v", err)
 	}
 }
+
+func TestPropertyRepeatedChunksRepairAfterRestart(t *testing.T) {
+	parent := t.TempDir()
+	rapid.Check(t, func(t *rapid.T) {
+		f := newPropertyStore(t, parent, 8<<20)
+		size := rapid.IntRange(3*MaxChunkSize, 4*MaxChunkSize).Draw(t, "size")
+		data := bytes.Repeat([]byte{rapid.Byte().Draw(t, "byte")}, size)
+		d := Sum(data)
+		m, err := Chunk(context.Background(), d, bytes.NewReader(data), func(Digest, []byte) error { return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		unique := map[Digest]bool{}
+		for _, c := range m.Chunks {
+			unique[c] = true
+		}
+		if len(unique) == len(m.Chunks) {
+			t.Fatal("fixture did not generate repeated chunks")
+		}
+		for step := 0; step < 3; step++ {
+			if step == 1 {
+				f.reopen(t)
+				f.backend.SetStalePresence(true)
+				for c := range unique {
+					f.backend.CorruptChunk(backendDigest(c), []byte("corrupt"))
+				}
+			}
+			f.backend.ResetCalls()
+			if err := f.store.Put(context.Background(), d, bytes.NewReader(data)); err != nil {
+				t.Fatal(err)
+			}
+			written := map[bbdigest.Digest]int{}
+			for _, call := range f.backend.Calls() {
+				if call.Operation == teststorage.ChunkPut {
+					written[call.Digest]++
+				}
+			}
+			if len(written) != len(unique) {
+				t.Fatalf("wrote %d distinct chunks, want %d", len(written), len(unique))
+			}
+			for _, count := range written {
+				if count != 1 {
+					t.Fatalf("wrote a chunk %d times", count)
+				}
+			}
+			checkStoreModel(t, f.store, []modelBlob{{data: data, digest: d, published: true}})
+		}
+	})
+}
