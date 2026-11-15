@@ -151,22 +151,21 @@ func (s *Server) FindMissingBlobs(ctx context.Context, req *repb.FindMissingBlob
 	if len(req.BlobDigests) > MaxBatchItems {
 		return nil, status.Error(codes.ResourceExhausted, "too many digests")
 	}
-	resp := &repb.FindMissingBlobsResponse{}
+	digests := make([]cas.Digest, 0, len(req.BlobDigests))
 	for _, p := range req.BlobDigests {
 		d, err := digest(p)
 		if err != nil {
 			return nil, err
 		}
-		if err := ctx.Err(); err != nil {
-			return nil, rpcError(err)
-		}
-		ok, err := s.store.Committed(d)
-		if err != nil {
-			return nil, rpcError(err)
-		}
-		if !ok {
-			resp.MissingBlobDigests = append(resp.MissingBlobDigests, p)
-		}
+		digests = append(digests, d)
+	}
+	missing, err := s.store.FindMissing(ctx, digests)
+	if err != nil {
+		return nil, rpcError(err)
+	}
+	resp := &repb.FindMissingBlobsResponse{}
+	for _, d := range missing {
+		resp.MissingBlobDigests = append(resp.MissingBlobDigests, &repb.Digest{Hash: d.Hex(), SizeBytes: d.Size})
 	}
 	return resp, nil
 }
@@ -294,7 +293,7 @@ func (s *Server) Write(stream bspb.ByteStream_WriteServer) error {
 	}
 	committed, unwatch := s.store.WatchCommit(d)
 	defer unwatch()
-	if ok, err := s.store.Has(stream.Context(), d); err != nil {
+	if ok, err := s.store.PublishExisting(stream.Context(), d); err != nil {
 		return rpcError(err)
 	} else if ok {
 		return stream.SendAndClose(&bspb.WriteResponse{CommittedSize: d.Size})
@@ -323,7 +322,7 @@ func (s *Server) Write(stream bspb.ByteStream_WriteServer) error {
 		if errors.Is(err, errCommitted) {
 			return stream.SendAndClose(&bspb.WriteResponse{CommittedSize: d.Size})
 		}
-		if ok, _ := s.store.Has(stream.Context(), d); ok {
+		if ok, _ := s.store.PublishExisting(stream.Context(), d); ok {
 			return stream.SendAndClose(&bspb.WriteResponse{CommittedSize: d.Size})
 		}
 		if errors.Is(err, cas.ErrCorrupt) {
@@ -392,7 +391,7 @@ func (s *Server) QueryWriteStatus(ctx context.Context, req *bspb.QueryWriteStatu
 	if err != nil {
 		return nil, err
 	}
-	ok, err := s.store.Has(ctx, d)
+	ok, err := s.store.PublishExisting(ctx, d)
 	if err != nil {
 		return nil, rpcError(err)
 	}

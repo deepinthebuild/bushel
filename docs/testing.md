@@ -17,7 +17,12 @@ Properties check independent invariants and models:
 - Upload partitions preserve identity, sequential offsets, and complete-only
   finishing; rejected parts cannot advance state.
 - Store histories compare put, import, read, corruption, repair, cancellation,
-  and reopen against an in-memory model. Failed writes cannot publish or notify.
+  and reopen against an injected Buildbarn backend. Partial or ambiguous writes
+  can leave verified backend data, but cannot publish catalog records or hints.
+- Independent CS/CMS eviction, stale presence, backend faults, and concurrent
+  catalog pruning/repair exercise availability without trusting presence hints.
+- Sized CID properties cover hash/size conversion, segmented hashing and actual
+  Bitswap framing; mapping stream properties bound aggregate remote responses.
 - Peer imports independently verify chunk digests, the whole-blob digest, and
   canonical cuts. Concurrent writers and quota failures preserve publication.
 - Announcement histories exercise overflow recovery, retries, restarts, offline
@@ -40,7 +45,8 @@ Replay with the seed Rapid reports. Turn a useful minimized failure into a
 sanitized source regression or fuzz seed; do not commit generated Rapid reports,
 which can contain local paths and runtime details.
 
-Fuzz targets are `FuzzParseDigest`, `FuzzParseManifest`, and
-`FuzzChunkSegmentation` and `FuzzCatalogDigest` in `internal/cas`, plus `FuzzParseResource` and
+Fuzz targets include `FuzzParseDigest`, `FuzzParseManifest`,
+`FuzzChunkSegmentation`, `FuzzCatalogDigest`, and `FuzzCatalogRecord` in `internal/cas`, plus `FuzzParseResource` and
 `FuzzUploadTransition` in `internal/reapi`. Use an exact target expression and
 `-run '^$'` for timed fuzzing so each target does not repeat the property suite.
+`internal/p2p` also fuzzes `FuzzSizedCIDCanonicalRoundTrip`.

@@ -13,7 +13,10 @@ import (
 	"testing"
 	"time"
 
+	repb "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
+	"github.com/buildbarn/bb-storage/pkg/digest"
 	"github.com/deepinthebuild/bushel/internal/cas"
+	"github.com/deepinthebuild/bushel/internal/teststorage"
 	"github.com/ipfs/go-cid"
 	pb "github.com/libp2p/go-libp2p-kad-dht/pb"
 	"github.com/libp2p/go-libp2p/core/crypto"
@@ -44,7 +47,7 @@ func TestPropertyBlobProviderIdentity(t *testing.T) {
 			t.Fatalf("invalid provider CID: %v", err)
 		}
 		again, _ := blobProviderCID(d)
-		if !key.Equals(again) || key.Equals(chunkCID(d.Hash)) || key.Equals(rendezvousCID) {
+		if !key.Equals(again) || key.Equals(routingCID(d.Hash)) || key.Equals(rendezvousCID) {
 			t.Fatal("provider identity is unstable or aliases another namespace")
 		}
 		d.Size++
@@ -60,7 +63,7 @@ func TestPropertyBlobProviderIdentity(t *testing.T) {
 }
 
 func TestRoutingIndexCapacityConfiguration(t *testing.T) {
-	store, err := cas.NewStore(t.TempDir(), 64<<20)
+	store, err := cas.NewStore(t.TempDir(), 64<<20, testBackend())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,9 +191,9 @@ func loopbackRoutingAddresses(addrs []ma.Multiaddr) []ma.Multiaddr {
 	return out
 }
 
-func routingNodeAt(t *testing.T, root string, key crypto.PrivKey) (*Node, *cas.Store) {
+func routingNodeAt(t *testing.T, root string, key crypto.PrivKey, backend cas.Backend) (*Node, *cas.Store) {
 	t.Helper()
-	store, err := cas.NewStore(root, 64<<20)
+	store, err := cas.NewStore(root, 64<<20, backend)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +219,7 @@ func routingNodeAt(t *testing.T, root string, key crypto.PrivKey) (*Node, *cas.S
 
 func routingNode(t *testing.T) (*Node, *cas.Store) {
 	t.Helper()
-	n, store := routingNodeAt(t, t.TempDir(), nil)
+	n, store := routingNodeAt(t, t.TempDir(), nil, testBackend())
 	t.Cleanup(func() { n.Close(); store.Close() })
 	return n, store
 }
@@ -341,7 +344,8 @@ func TestRoutingRestartReannouncesCommittedCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner, store := routingNodeAt(t, root, key)
+	backend := testBackend()
+	owner, store := routingNodeAt(t, root, key, backend)
 	data := []byte("retained across daemon restart")
 	d := cas.Sum(data)
 	if err := store.Put(ctx, d, bytes.NewReader(data)); err != nil {
@@ -353,7 +357,7 @@ func TestRoutingRestartReannouncesCommittedCatalog(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	owner, store = routingNodeAt(t, root, key)
+	owner, store = routingNodeAt(t, root, key, backend)
 	t.Cleanup(func() { owner.Close(); store.Close() })
 	bridge, _ := routingNode(t)
 	// The bridge is new and has no old provider records. A startup sweep,
@@ -398,6 +402,55 @@ func (r *routingSpy) FindProvidersAsync(ctx context.Context, key cid.Cid, count 
 }
 func (*routingSpy) Close() error { return nil }
 func (r *routingSpy) calls() int { r.mu.Lock(); defer r.mu.Unlock(); return len(r.keys) }
+
+func TestAnnounceRechecksBackendAvailability(t *testing.T) {
+	for _, mode := range []string{"chunk eviction", "mapping eviction", "backend error", "canceled"} {
+		t.Run(mode, func(t *testing.T) {
+			storage := teststorage.New()
+			store, err := cas.NewStore(t.TempDir(), 64<<20, cas.Backend{Chunks: storage.Chunks, Mappings: storage.Mappings})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			ctx, cancel := context.WithCancel(testContext(t))
+			defer cancel()
+			data := testData(700000)
+			d := cas.Sum(data)
+			if err := store.Put(ctx, d, bytes.NewReader(data)); err != nil {
+				t.Fatal(err)
+			}
+			manifest, err := store.Manifest(ctx, d)
+			if err != nil || len(manifest.Chunks) < 2 {
+				t.Fatalf("multi-chunk fixture: %v", err)
+			}
+			router := &routingSpy{}
+			n := &Node{store: store, blobRouter: router}
+			if err := n.announceBlob(ctx, d); err != nil || router.calls() != 1 {
+				t.Fatalf("initial announcement: %v", err)
+			}
+			var wantErr error
+			switch mode {
+			case "chunk eviction":
+				c := manifest.Chunks[0]
+				storage.EvictChunk(digest.MustNewDigest("", repb.DigestFunction_SHA256, c.Hex(), c.Size))
+			case "mapping eviction":
+				storage.EvictMapping(digest.MustNewDigest("", repb.DigestFunction_SHA256, d.Hex(), d.Size))
+			case "backend error":
+				wantErr = errors.New("backend unavailable")
+				storage.Fail(teststorage.ChunkFindMissing, 0, wantErr)
+			case "canceled":
+				cancel()
+				wantErr = context.Canceled
+			}
+			if err := n.announceBlob(ctx, d); !errors.Is(err, wantErr) {
+				t.Fatalf("availability check error: got %v, want %v", err, wantErr)
+			}
+			if router.calls() != 1 {
+				t.Fatal("advertised after the backend became unavailable")
+			}
+		})
+	}
+}
 
 func TestRoutingStaleProviderFallsBack(t *testing.T) {
 	stale, _ := routingNode(t)

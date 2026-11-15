@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "cas",
     srcs = [
+        "backend.go",
         "catalog.go",
         "chunk.go",
         "digest.go",
@@ -12,23 +13,41 @@ go_library(
     importpath = "github.com/deepinthebuild/bushel/internal/cas",
     visibility = ["//:__subpackages__"],
     deps = [
+        "@com_github_bazelbuild_remote_apis//build/bazel/remote/execution/v2:execution",
+        "@com_github_buildbarn_bb_storage//pkg/blobstore",
+        "@com_github_buildbarn_bb_storage//pkg/blobstore/chunk",
+        "@com_github_buildbarn_bb_storage//pkg/cas",
+        "@com_github_buildbarn_bb_storage//pkg/cas/reader",
+        "@com_github_buildbarn_bb_storage//pkg/digest",
         "@com_github_buildbarn_go_cdc//:go-cdc",
         "@com_github_gofrs_flock//:flock",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
     ],
 )
 
 go_test(
     name = "cas_test",
     srcs = [
+        "backend_test.go",
+        "catalog_probe_test.go",
         "catalog_test.go",
         "format_test.go",
+        "presence_test.go",
         "property_test.go",
         "store_property_test.go",
         "store_test.go",
     ],
     embed = [":cas"],
     deps = [
+        "//internal/teststorage",
+        "@com_github_bazelbuild_remote_apis//build/bazel/remote/execution/v2:execution",
+        "@com_github_buildbarn_bb_storage//pkg/blobstore",
+        "@com_github_buildbarn_bb_storage//pkg/blobstore/chunk",
+        "@com_github_buildbarn_bb_storage//pkg/digest",
         "@com_github_buildbarn_go_cdc//:go-cdc",
         "@net_pgregory_rapid//:rapid",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
     ],
 )

@@ -11,13 +11,15 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/deepinthebuild/bushel/internal/teststorage"
 	"pgregory.net/rapid"
 )
 
 type propertyStoreFixture struct {
-	store *Store
-	root  string
-	limit int64
+	store   *Store
+	root    string
+	limit   int64
+	backend *teststorage.Store
 }
 
 // Each generated case owns an explicit, fresh directory, including during
@@ -27,7 +29,7 @@ func newPropertyStore(t *rapid.T, parent string, limit int64) *propertyStoreFixt
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &propertyStoreFixture{root: root, limit: limit}
+	f := &propertyStoreFixture{root: root, limit: limit, backend: teststorage.New()}
 	t.Cleanup(func() {
 		if f.store != nil {
 			if err := f.store.Close(); err != nil {
@@ -38,7 +40,7 @@ func newPropertyStore(t *rapid.T, parent string, limit int64) *propertyStoreFixt
 			t.Error(err)
 		}
 	})
-	f.store, err = NewStore(root, limit)
+	f.store, err = NewStore(root, limit, testBackend(f.backend))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +53,7 @@ func (f *propertyStoreFixture) reopen(t *rapid.T) {
 	}
 	f.store = nil
 	var err error
-	f.store, err = NewStore(f.root, f.limit)
+	f.store, err = NewStore(f.root, f.limit, testBackend(f.backend))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +68,7 @@ type modelBlob struct {
 
 func checkStoreModel(t *rapid.T, s *Store, blobs []modelBlob) {
 	for _, b := range blobs {
-		committed, err := s.Committed(b.digest)
+		committed, err := s.Committed(context.Background(), b.digest)
 		if err != nil || committed != b.published {
 			t.Fatalf("publication differs from model: got %v, want %v, err %v", committed, b.published, err)
 		}
@@ -114,7 +116,7 @@ func TestPropertyStoreOperationSequences(t *testing.T) {
 		}
 		// The action list itself shrinks, so a failed history reduces to the
 		// smallest sequence of puts, faults, reads, and restarts that exposes it.
-		actions := rapid.SliceOfN(rapid.IntRange(0, 31), 1, 16).Draw(t, "actions")
+		actions := rapid.SliceOfN(rapid.IntRange(0, 35), 1, 16).Draw(t, "actions")
 		for _, action := range actions {
 			b := &blobs[action%len(blobs)]
 			s := f.store
@@ -152,10 +154,8 @@ func TestPropertyStoreOperationSequences(t *testing.T) {
 				if b.published && b.digest.Size > 0 {
 					bad := bytes.Clone(b.data)
 					bad[0] ^= 1
-					if err := os.WriteFile(s.chunkPath(b.digest.Hash), bad, 0600); err != nil {
-						t.Fatal(err)
-					}
-					if _, err := s.Block(b.digest.Hash); !errors.Is(err, ErrCorrupt) {
+					f.backend.CorruptChunk(backendDigest(b.digest), bad)
+					if _, err := s.Block(context.Background(), b.digest); !errors.Is(err, ErrCorrupt) {
 						t.Fatalf("corrupted block crossed serving boundary: %v", err)
 					}
 					b.corrupt = true
@@ -182,6 +182,11 @@ func TestPropertyStoreOperationSequences(t *testing.T) {
 					if !errors.Is(err, io.ErrUnexpectedEOF) {
 						t.Fatalf("failed fetch: %v", err)
 					}
+				}
+			case 8:
+				if b.digest.Size > 0 {
+					f.backend.EvictChunk(backendDigest(b.digest))
+					b.published, b.corrupt = false, false
 				}
 			}
 			checkStoreModel(t, f.store, blobs)
@@ -239,10 +244,13 @@ func TestPropertyImportRejectsUntrustedContent(t *testing.T) {
 		if !errors.Is(err, ErrCorrupt) {
 			t.Fatalf("untrusted import: %v", err)
 		}
-		if committed, err := f.store.Committed(m.Blob); err != nil || committed {
+		if committed, err := f.store.Committed(context.Background(), m.Blob); err != nil || committed {
 			t.Fatalf("failed import published: %v", err)
 		}
-		for _, dir := range []string{"chunks", "manifests", "tmp"} {
+		if chunks, mappings := f.backend.Counts(); chunks != 0 || mappings != 0 {
+			t.Fatal("unverified import wrote to the backend")
+		}
+		for _, dir := range []string{"catalog", "tmp"} {
 			entries, err := os.ReadDir(filepath.Join(f.root, dir))
 			if err != nil || len(entries) != 0 {
 				t.Fatalf("failed import leaked %s: %v", dir, err)
@@ -302,10 +310,10 @@ func TestPropertyStoreQuotaFailureDoesNotPublish(t *testing.T) {
 			t.Fatalf("quota overflow: %v", err)
 		}
 		d := Sum(data)
-		if committed, err := f.store.Committed(d); err != nil || committed {
+		if committed, err := f.store.Committed(context.Background(), d); err != nil || committed {
 			t.Fatalf("quota rejection published a blob: %v", err)
 		}
-		if _, err := f.store.Manifest(d); !errors.Is(err, ErrNotFound) {
+		if _, err := f.store.Manifest(context.Background(), d); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("quota rejection installed a manifest: %v", err)
 		}
 		if has, err := f.store.Has(context.Background(), d); err != nil || has {

@@ -46,21 +46,26 @@ bazel run //cmd/bushel -- -discovery=false -data-dir=data/node-b '-grpc-listen=1
 ```
 
 `-peer`, `-bootstrap`, and `-p2p-listen` are repeatable. `-instance` selects a
-REAPI instance; the default is empty. `-disk-bytes` bounds storage and upload
-staging (20 GiB by default). Verified read scratch has a separate equal budget,
-so total data usage is bounded to twice that setting, plus metadata and keys.
+REAPI and backend instance; the default is empty. Buildbarn's persistent local
+backend stores chunks and chunk mappings, with automatic block eviction.
+`-local-storage-bytes` sets the default chunk-file capacity (20 GiB); its mapping
+and index files add 52 MiB. `-staging-bytes` separately bounds upload scratch and
+catalog payloads (20 GiB), with an equal budget for verified read scratch.
+Filesystem allocation overhead and configured backend caches are additional.
+Use `-storage-config` for Buildbarn's full JSON/Jsonnet CAS configuration,
+including remote backends and storage decorators; see [storage](docs/storage.md).
 Use `bazel run //cmd/bushel -- -help` for all flags.
 
 This first version provides SHA-256 CAS, Capabilities, ByteStream, and GetTree.
 It verifies chunks and reconstructed blobs before returning bytes to clients.
-FindMissingBlobs checks local publication metadata. Read misses fetch from
+FindMissingBlobs checks backend mapping and chunk presence. Read misses fetch from
 connected peers or providers discovered through the Bushel DHT, then populate
 the local CAS. Interrupted uploads restart at
 zero; compression and client-side chunk-mapping RPCs are not advertised.
 
 The CAS endpoint is a building block for Bazel infrastructure. A complete build
 cache also needs an action-cache service. Follow-up work is tracked for
-[eviction and storage performance](https://github.com/deepinthebuild/bushel/issues/3),
+[storage performance](https://github.com/deepinthebuild/bushel/issues/3),
 [upload resumption and interoperability](https://github.com/deepinthebuild/bushel/issues/5),
 and [NAT traversal](https://github.com/deepinthebuild/bushel/issues/6).
 The [Bushel provider DHT](docs/routing-v1.md) routes lookups beyond connected
@@ -80,7 +85,8 @@ It can disrupt public peer discovery and Bushel provider routing. Explicit peers
 with discovery disabled avoid public bootstrap lookup; the Bushel overlay still
 uses Kademlia. Mitigation work is tracked in [issue #7](https://github.com/deepinthebuild/bushel/issues/7).
 
-See [the design](docs/design.md), [v1 wire format](docs/protocol-v1.md), and
+Wire formats may change incompatibly until the first stable release.
+See [the design](docs/design.md), [wire format](docs/protocol-v1.md), and
 [digest decision and benchmarks](docs/digest-choice.md).
 
 The integration test uploads through one node's gRPC endpoint and downloads

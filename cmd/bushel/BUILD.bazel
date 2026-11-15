@@ -2,13 +2,20 @@ load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 
 go_library(
     name = "bushel_lib",
-    srcs = ["main.go"],
+    srcs = [
+        "main.go",
+        "storage.go",
+    ],
     importpath = "github.com/deepinthebuild/bushel/cmd/bushel",
     visibility = ["//visibility:private"],
     deps = [
         "//internal/cas",
         "//internal/p2p",
         "//internal/reapi",
+        "//internal/storage",
+        "@com_github_buildbarn_bb_storage//pkg/program",
+        "@com_github_buildbarn_bb_storage//pkg/proto/configuration/blobstore",
+        "@com_github_gofrs_flock//:flock",
         "@com_github_libp2p_go_libp2p//core/crypto",
         "@com_github_libp2p_go_libp2p//core/peer",
         "@com_github_multiformats_go_multiaddr//:go-multiaddr",
@@ -23,7 +30,10 @@ go_binary(
 
 go_test(
     name = "bushel_test",
-    srcs = ["main_test.go"],
+    srcs = [
+        "main_test.go",
+        "storage_test.go",
+    ],
     embed = [":bushel_lib"],
     deps = ["@com_github_libp2p_go_libp2p//core/peer"],
 )

@@ -10,11 +10,34 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	repb "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
+	bbdigest "github.com/buildbarn/bb-storage/pkg/digest"
+	"github.com/deepinthebuild/bushel/internal/teststorage"
 )
+
+func testBackend(f *teststorage.Store) Backend {
+	return Backend{Chunks: f.Chunks, Mappings: f.Mappings}
+}
+
+func backendDigest(d Digest) bbdigest.Digest {
+	parsed, err := bbdigest.MustNewFunction("", repb.DigestFunction_SHA256).NewDigest(d.Hex(), d.Size)
+	if err != nil {
+		panic(err)
+	}
+	return parsed
+}
 
 func testStore(t *testing.T) *Store {
 	t.Helper()
-	s, err := NewStore(t.TempDir(), 64<<20)
+	s, _ := testStoreWithBackend(t)
+	return s
+}
+
+func testStoreWithBackend(t *testing.T) (*Store, *teststorage.Store) {
+	t.Helper()
+	f := teststorage.New()
+	s, err := NewStore(t.TempDir(), 64<<20, testBackend(f))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -23,17 +46,18 @@ func testStore(t *testing.T) *Store {
 			t.Error(err)
 		}
 	})
-	return s
+	return s, f
 }
 
 func TestStoreRoundTripRestartAndLock(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
-	s, err := NewStore(root, 64<<20)
+	f := teststorage.New()
+	s, err := NewStore(root, 64<<20, testBackend(f))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if other, err := NewStore(root, 64<<20); err == nil {
+	if other, err := NewStore(root, 64<<20, testBackend(f)); err == nil {
 		other.Close()
 		t.Fatal("second writer acquired lock")
 	}
@@ -45,7 +69,7 @@ func TestStoreRoundTripRestartAndLock(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	s, err = NewStore(root, 64<<20)
+	s, err = NewStore(root, 64<<20, testBackend(f))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +92,7 @@ func TestStoreRoundTripRestartAndLock(t *testing.T) {
 }
 
 func TestStoreRejectsCorruptUploadWithoutPublication(t *testing.T) {
-	s := testStore(t)
+	s, backend := testStoreWithBackend(t)
 	ctx := context.Background()
 	b := fixture(1 << 20)
 	d := Sum(b)
@@ -76,10 +100,13 @@ func TestStoreRejectsCorruptUploadWithoutPublication(t *testing.T) {
 	if err := s.Put(ctx, d, bytes.NewReader(b)); !errors.Is(err, ErrCorrupt) {
 		t.Fatal(err)
 	}
-	if _, err := s.Manifest(d); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Manifest(context.Background(), d); !errors.Is(err, ErrNotFound) {
 		t.Fatal(err)
 	}
-	for _, dir := range []string{"chunks", "tmp"} {
+	if chunks, mappings := backend.Counts(); chunks != 0 || mappings != 0 {
+		t.Fatal("unverified upload wrote to the backend")
+	}
+	for _, dir := range []string{"catalog", "tmp"} {
 		entries, err := os.ReadDir(filepath.Join(s.root, dir))
 		if err != nil || len(entries) != 0 {
 			t.Fatalf("leaked %s", dir)
@@ -88,24 +115,17 @@ func TestStoreRejectsCorruptUploadWithoutPublication(t *testing.T) {
 }
 
 func TestStoreCorruptionAndRepair(t *testing.T) {
-	s := testStore(t)
+	s, backend := testStoreWithBackend(t)
 	ctx := context.Background()
 	b := fixture(1 << 20)
 	d := Sum(b)
 	if err := s.Put(ctx, d, bytes.NewReader(b)); err != nil {
 		t.Fatal(err)
 	}
-	m, _ := s.Manifest(d)
-	path := s.chunkPath(m.Chunks[0].Hash)
-	f, err := os.OpenFile(path, os.O_WRONLY, 0600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = f.WriteAt([]byte{b[0] ^ 1}, 0)
-	f.Close()
-	if err != nil {
-		t.Fatal(err)
-	}
+	m, _ := s.Manifest(context.Background(), d)
+	bad := bytes.Clone(b[:m.Chunks[0].Size])
+	bad[0] ^= 1
+	backend.CorruptChunk(backendDigest(m.Chunks[0]), bad)
 	if r, err := s.Open(ctx, d); !errors.Is(err, ErrCorrupt) {
 		if r != nil {
 			r.Close()
@@ -128,9 +148,9 @@ func TestStoreImportVerifiesChunksAndCanonicalCuts(t *testing.T) {
 	if err := a.Put(ctx, d, bytes.NewReader(data)); err != nil {
 		t.Fatal(err)
 	}
-	m, _ := a.Manifest(d)
+	m, _ := a.Manifest(context.Background(), d)
 	if err := b.Import(ctx, m, func(_ context.Context, c Digest) ([]byte, error) {
-		p, err := a.Block(c.Hash)
+		p, err := a.Block(context.Background(), c)
 		if len(p) > 0 {
 			p[0] ^= 1
 		}
@@ -138,10 +158,10 @@ func TestStoreImportVerifiesChunksAndCanonicalCuts(t *testing.T) {
 	}); !errors.Is(err, ErrCorrupt) {
 		t.Fatal(err)
 	}
-	if _, err := b.Manifest(d); !errors.Is(err, ErrNotFound) {
+	if _, err := b.Manifest(context.Background(), d); !errors.Is(err, ErrNotFound) {
 		t.Fatal(err)
 	}
-	if err := b.Import(ctx, m, func(_ context.Context, c Digest) ([]byte, error) { return a.Block(c.Hash) }); err != nil {
+	if err := b.Import(ctx, m, func(_ context.Context, c Digest) ([]byte, error) { return a.Block(context.Background(), c) }); err != nil {
 		t.Fatal(err)
 	}
 	other := fixture(3 * MinChunkSize)
@@ -173,7 +193,7 @@ func TestStoreQuotaAndConcurrentPublication(t *testing.T) {
 	if ok, err := s.Has(ctx, d); err != nil || !ok {
 		t.Fatalf("has %v %v", ok, err)
 	}
-	limited, err := NewStore(t.TempDir(), 128)
+	limited, err := NewStore(t.TempDir(), 128, testBackend(teststorage.New()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,8 +203,9 @@ func TestStoreQuotaAndConcurrentPublication(t *testing.T) {
 	}
 }
 
-func BenchmarkStoreDuplicateRoundTrip(b *testing.B) {
-	s, err := NewStore(b.TempDir(), 256<<20)
+// Measures Bushel staging and verification with an injected memory backend.
+func BenchmarkStoreMemoryBackendRoundTrip(b *testing.B) {
+	s, err := NewStore(b.TempDir(), 256<<20, testBackend(teststorage.New()))
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -243,7 +264,7 @@ func TestOpenReaderAdmissionAndCancellation(t *testing.T) {
 }
 
 func TestFullStoreCanReadAndScratchIsBounded(t *testing.T) {
-	s, err := NewStore(t.TempDir(), 1<<20)
+	s, err := NewStore(t.TempDir(), 1<<20, testBackend(teststorage.New()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +296,7 @@ func TestFullStoreCanReadAndScratchIsBounded(t *testing.T) {
 }
 
 func BenchmarkCommittedPresence(b *testing.B) {
-	s, err := NewStore(b.TempDir(), 64<<20)
+	s, err := NewStore(b.TempDir(), 64<<20, testBackend(teststorage.New()))
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -288,7 +309,7 @@ func BenchmarkCommittedPresence(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		ok, err := s.Committed(d)
+		ok, err := s.Committed(context.Background(), d)
 		if err != nil || !ok {
 			b.Fatalf("%v %v", ok, err)
 		}
@@ -304,7 +325,7 @@ func TestStoreRefusesUnownedDirectory(t *testing.T) {
 	if err := os.WriteFile(path, []byte("keep"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if s, err := NewStore(dir, 1<<20); err == nil {
+	if s, err := NewStore(dir, 1<<20, testBackend(teststorage.New())); err == nil {
 		s.Close()
 		t.Fatal("accepted nonempty unowned directory")
 	}

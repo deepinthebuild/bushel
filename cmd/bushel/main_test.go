@@ -79,9 +79,13 @@ func TestListenerLimitAndShutdown(t *testing.T) {
 }
 
 func TestDaemonStartsOfflineAndStops(t *testing.T) {
+	root, child := daemonSubprocess(t)
+	if !child {
+		return
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	c := config{data: t.TempDir(), grpc: "127.0.0.1:0", listen: values{"/ip4/127.0.0.1/tcp/0"}, discovery: false, disk: 64 << 20, timeout: time.Second}
+	c := config{data: root, grpc: "127.0.0.1:0", listen: values{"/ip4/127.0.0.1/tcp/0"}, discovery: false, disk: 64 << 20, localStorage: 32 << 20, timeout: 5 * time.Second}
 	result := make(chan error, 1)
 	go func() { result <- run(ctx, c) }()
 	// The state lock and identity file establish that startup reached initialization.

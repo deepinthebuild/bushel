@@ -14,6 +14,7 @@ import (
 	"github.com/deepinthebuild/bushel/internal/cas"
 	"github.com/deepinthebuild/bushel/internal/p2p"
 	"github.com/deepinthebuild/bushel/internal/reapi"
+	"github.com/deepinthebuild/bushel/internal/teststorage"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
@@ -24,7 +25,8 @@ import (
 
 func node(t *testing.T, ctx context.Context) (*p2p.Node, *grpc.ClientConn) {
 	t.Helper()
-	store, err := cas.NewStore(t.TempDir(), 64<<20)
+	backend := teststorage.New()
+	store, err := cas.NewStore(t.TempDir(), 64<<20, cas.Backend{Chunks: backend.Chunks, Mappings: backend.Mappings})
 	if err != nil {
 		t.Fatal(err)
 	}

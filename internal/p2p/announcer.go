@@ -59,12 +59,14 @@ type Announcer struct {
 // AnnouncerStats is an approximate lifetime snapshot. Queued includes inflight
 // work; Announced and Failures count completed announcement attempts observed
 // by Run. DroppedHints is a lower bound: source overflow signals can coalesce
-// multiple losses. Sweep timing covers catalog admission, including queue
+// multiple losses. ProbeFailures counts backend entries skipped during partial
+// catalog scans. Sweep timing covers catalog admission, including queue
 // backpressure; remaining announcements are represented by Queued.
 type AnnouncerStats struct {
 	Queued            int
 	Announced         uint64
 	Failures          uint64
+	ProbeFailures     uint64
 	DroppedHints      uint64
 	Sweeping          bool
 	SweepStarted      time.Time
@@ -250,8 +252,9 @@ type announcementScan struct {
 
 // Run subscribes before starting its first catalog walk. Catalog production is
 // backpressured rather than discarded; alternating admissions prevent a steady
-// stream of new hints from starving a sweep. Scan errors stop Run, while
-// announcement errors are retried internally. Cancellation joins both workers.
+// stream of new hints from starving a sweep. Partial backend probe failures and
+// announcement errors are retried internally; other scan errors stop Run.
+// Cancellation joins both workers.
 func (a *Announcer) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	hints, overflow, unsubscribe := a.source.SubscribeCommits(a.opts.HintBuffer)
@@ -276,6 +279,20 @@ func (a *Announcer) Run(ctx context.Context) error {
 	var recovery, offlineUntil time.Time
 	preferSweep := true
 	markRecovery := func(now time.Time) { recovery = earlier(recovery, now.Add(a.opts.RecoveryInterval)) }
+	acceptScanError := func(now time.Time, err error) error {
+		if err == nil {
+			return nil
+		}
+		var partial *cas.CatalogProbeError
+		if !errors.As(err, &partial) {
+			return fmt.Errorf("scan committed manifests: %w", err)
+		}
+		markRecovery(now)
+		a.statsMu.Lock()
+		a.stats.ProbeFailures += uint64(max(partial.Failed, 0))
+		a.statsMu.Unlock()
+		return nil
+	}
 	finish := func(now time.Time, err error) {
 		if q.finish(now, err, a.opts) {
 			markRecovery(now)
@@ -309,8 +326,8 @@ func (a *Announcer) Run(ctx context.Context) error {
 	acceptSweep := func(d cas.Digest, ok bool, now time.Time) error {
 		if !ok {
 			if scan.err != nil {
-				if err := <-scan.err; err != nil {
-					return fmt.Errorf("scan committed manifests: %w", err)
+				if err := acceptScanError(now, <-scan.err); err != nil {
+					return err
 				}
 			}
 			scan = nil
@@ -431,8 +448,8 @@ func (a *Announcer) Run(ctx context.Context) error {
 			finish(clock.Now(), err)
 		case <-tick:
 		case err := <-scanErrors:
-			if err != nil {
-				return fmt.Errorf("scan committed manifests: %w", err)
+			if err := acceptScanError(clock.Now(), err); err != nil {
+				return err
 			}
 			scan.err = nil
 		case d, ok := <-sweepItems:

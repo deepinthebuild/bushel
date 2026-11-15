@@ -17,9 +17,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/buildbarn/bb-storage/pkg/program"
 	"github.com/deepinthebuild/bushel/internal/cas"
 	"github.com/deepinthebuild/bushel/internal/p2p"
 	"github.com/deepinthebuild/bushel/internal/reapi"
+	"github.com/deepinthebuild/bushel/internal/storage"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
@@ -32,6 +34,8 @@ func (v *values) Set(s string) error { *v = append(*v, s); return nil }
 
 type config struct {
 	data, grpc, instance           string
+	storageConfig                  string
+	localStorage                   int64
 	listen, peers, bootstrap       values
 	discovery                      bool
 	disk                           int64
@@ -49,7 +53,9 @@ func parse(args []string) (config, error) {
 	fs.Var(&c.peers, "peer", "explicit Bushel peer multiaddress including /p2p ID (repeatable)")
 	fs.Var(&c.bootstrap, "bootstrap", "IPFS bootstrap peer multiaddress (repeatable; defaults to library list)")
 	fs.BoolVar(&c.discovery, "discovery", true, "discover peers using the public IPFS rendezvous")
-	fs.Int64Var(&c.disk, "disk-bytes", 20<<30, "storage/staging budget; an equal budget is reserved for read scratch")
+	fs.Int64Var(&c.disk, "staging-bytes", 20<<30, "upload staging/catalog budget; an equal budget is reserved for verified read scratch")
+	fs.StringVar(&c.storageConfig, "storage-config", "", "Buildbarn ContentAddressableStorageConfiguration JSON/Jsonnet (default: local persistent files)")
+	fs.Int64Var(&c.localStorage, "local-storage-bytes", 20<<30, "chunk file capacity for the default Buildbarn backend")
 	fs.DurationVar(&c.timeout, "request-timeout", 30*time.Second, "maximum peer request duration")
 	fs.IntVar(&c.routingRecords, "routing-records", 32768, "maximum cached blob-provider pairs")
 	fs.IntVar(&c.routingPerPeer, "routing-records-per-peer", 0, "maximum cached pairs per provider (0: up to 16384 within total limit)")
@@ -61,6 +67,9 @@ func parse(args []string) (config, error) {
 	}
 	if c.data == "" || c.disk < 1<<20 || c.timeout <= 0 {
 		return c, errors.New("invalid state directory, disk budget, or timeout")
+	}
+	if c.storageConfig == "" && c.localStorage < 16<<20 {
+		return c, errors.New("default local storage needs at least 16 MiB")
 	}
 	if c.routingRecords < 64 || c.routingRecords > 1<<20 || c.routingPerPeer < 0 || c.routingPerPeer > c.routingRecords {
 		return c, errors.New("invalid routing index capacity")
@@ -202,11 +211,33 @@ type boundedConn struct {
 func (c *boundedConn) Close() error { err := c.Conn.Close(); c.once.Do(c.release); return err }
 
 func run(ctx context.Context, c config) error {
-	store, err := cas.NewStore(c.data, c.disk)
+	lock, err := lockDirectory(c.data)
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer lock.Unlock()
+	return program.RunLocal(ctx, func(ctx context.Context, _, dependencies program.Group) error {
+		var backend cas.Backend
+		cfg, err := storageConfiguration(c)
+		if err != nil {
+			return err
+		}
+		startupCtx, cancel := context.WithTimeout(ctx, c.timeout)
+		backend, err = storage.New(startupCtx, dependencies, cfg, c.instance)
+		cancel()
+		if err != nil {
+			return err
+		}
+		store, err := cas.NewStore(filepath.Join(c.data, "state"), c.disk, backend)
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+		return serve(ctx, c, store)
+	})
+}
+
+func serve(ctx context.Context, c config, store *cas.Store) error {
 	key, err := identity(c.data)
 	if err != nil {
 		return err

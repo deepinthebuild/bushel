@@ -3,51 +3,51 @@ package p2p
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/deepinthebuild/bushel/internal/cas"
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	ipld "github.com/ipfs/go-ipld-format"
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/multiformats/go-multihash"
 )
 
-func chunkCID(hash [32]byte) cid.Cid {
-	mh, _ := multihash.Encode(hash[:], multihash.SHA2_256)
-	return cid.NewCidV1(cid.Raw, mh)
+type chunkGetter interface {
+	Block(context.Context, cas.Digest) ([]byte, error)
 }
 
-func chunkHash(c cid.Cid) ([32]byte, bool) {
-	var hash [32]byte
-	if !c.Defined() || c.Version() != 1 || c.Type() != cid.Raw {
-		return hash, false
-	}
-	mh, err := multihash.Decode(c.Hash())
-	if err != nil || mh.Code != multihash.SHA2_256 || len(mh.Digest) != len(hash) {
-		return hash, false
-	}
-	copy(hash[:], mh.Digest)
-	return hash, true
-}
-
-// readStore exposes only committed, verified chunks. Bitswap never persists
+// readStore exposes verified chunks. Bitswap never persists
 // unsolicited or partially downloaded data; Store.Import owns publication.
-type readStore struct{ store *cas.Store }
+type readStore struct {
+	store   chunkGetter
+	timeout time.Duration
+}
 
 func (s readStore) Get(ctx context.Context, c cid.Cid) (blocks.Block, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	hash, ok := chunkHash(c)
-	if !ok {
+	d, err := sizedChunkDigest(c)
+	if err != nil {
 		return nil, ipld.ErrNotFound{Cid: c}
 	}
-	b, err := s.store.Block(hash)
+	timeout := s.timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	b, err := s.store.Block(ctx, d)
 	if errors.Is(err, cas.ErrNotFound) || errors.Is(err, cas.ErrCorrupt) {
 		return nil, ipld.ErrNotFound{Cid: c}
 	}
 	if err != nil {
 		return nil, err
+	}
+	// NewBlockWithCid normally trusts its caller. Check the complete tuple
+	// here so Get, Has, and GetSize cannot expose bytes under a wrong identity.
+	if cas.Sum(b) != d {
+		return nil, ipld.ErrNotFound{Cid: c}
 	}
 	return blocks.NewBlockWithCid(b, c)
 }
