@@ -1,0 +1,21 @@
+diff --git a/go/tools/builders/nogo_main.go b/go/tools/builders/nogo_main.go
+--- a/go/tools/builders/nogo_main.go
++++ b/go/tools/builders/nogo_main.go
+@@ -539,12 +539,16 @@ func load(packagePath, goVersion string, imp *importer, filenames []string) (*goPackage, error) {
+ 	initFileVersions(info)
+ 
++	getPackage := func(path string) *types.Package {
++		return imp.packageCache[path]
++	}
++
+ 	types, err := config.Check(packagePath, pkg.fset, syntax, info)
+ 	if err != nil {
+ 		pkg.illTyped, pkg.typeCheckError = true, err
+ 	}
+ 	pkg.types, pkg.typesInfo = types, info
+ 
+-	pkg.facts, err = facts.NewDecoder(pkg.types).Decode(imp.readFacts)
++	pkg.facts, err = facts.NewDecoder(pkg.types, getPackage).Decode(imp.readFacts)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("internal error decoding facts: %v", err)
+ 	}

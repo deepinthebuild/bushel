@@ -1,1 +1,3 @@
 * text=auto eol=lf
+# Patch context prefixes tabs and blank lines with a space.
+tools/patches/*.patch whitespace=-blank-at-eol,-space-before-tab
