@@ -32,6 +32,7 @@ go_test(
         "backend_test.go",
         "catalog_probe_test.go",
         "catalog_test.go",
+        "corruption_test.go",
         "format_test.go",
         "presence_test.go",
         "property_test.go",
