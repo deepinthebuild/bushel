@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "cas",
     srcs = [
+        "catalog.go",
         "chunk.go",
         "digest.go",
         "manifest.go",
@@ -19,6 +20,7 @@ go_library(
 go_test(
     name = "cas_test",
     srcs = [
+        "catalog_test.go",
         "format_test.go",
         "property_test.go",
         "store_property_test.go",

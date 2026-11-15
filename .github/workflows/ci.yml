@@ -53,6 +53,7 @@ jobs:
             'internal/cas FuzzParseManifest' \
             'internal/cas FuzzParseDigest' \
             'internal/cas FuzzChunkSegmentation' \
+            'internal/cas FuzzCatalogDigest' \
             'internal/reapi FuzzParseResource' \
             'internal/reapi FuzzUploadTransition'; do
             read -r package fuzz <<< "$target"

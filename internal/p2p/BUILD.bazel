@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "p2p",
     srcs = [
+        "announcer.go",
         "blockstore.go",
         "discovery.go",
         "limits.go",
@@ -41,6 +42,7 @@ go_library(
 go_test(
     name = "p2p_test",
     srcs = [
+        "announcer_test.go",
         "node_test.go",
         "routing_store_test.go",
     ],
