@@ -384,7 +384,17 @@ func (r *chunkSource) Read(p []byte) (int, error) {
 	return r.buf.Read(p)
 }
 
-func (s *Store) verifyTo(ctx context.Context, d Digest, w io.Writer) error {
+func (s *Store) verifyTo(ctx context.Context, d Digest, w io.Writer) (retErr error) {
+	// Capture the publication before reading bytes. A failed verification must
+	// not prune metadata installed by a concurrent successful repair.
+	s.mu.Lock()
+	generation := s.generation
+	s.mu.Unlock()
+	defer func() {
+		if errors.Is(retErr, ErrCorrupt) || errors.Is(retErr, ErrNotFound) {
+			retErr = errors.Join(retErr, s.invalidateCatalog(d, generation))
+		}
+	}()
 	m, err := s.Manifest(ctx, d)
 	if err != nil {
 		return err

@@ -149,6 +149,24 @@ func (s *Store) pruneCatalog(observed catalogRecord) error {
 	return nil
 }
 
+// invalidateCatalog removes only publications preceding a failed byte read.
+// Snapshotting the generation avoids a metadata file read on every healthy read.
+func (s *Store) invalidateCatalog(d Digest, generation uint64) error {
+	s.mu.Lock()
+	observed, err := readCatalogRecord(s.catalogPath(d))
+	s.mu.Unlock()
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if observed.digest != d || observed.generation > generation {
+		return nil
+	}
+	return s.pruneCatalog(observed)
+}
+
 // Both startup accounting and catalog walks retain only one directory batch.
 func walkDirectoryEntries(ctx context.Context, path string, visit func(os.DirEntry) error) (retErr error) {
 	if err := ctx.Err(); err != nil {

@@ -179,13 +179,11 @@ func TestPropertyBackendEvictionCorruptionAndRepair(t *testing.T) {
 		if err := f.store.WalkCommitted(context.Background(), func(Digest) error { announced++; return nil }); err != nil {
 			t.Fatal(err)
 		}
-		if (announced == 1) != presenceHint {
-			t.Fatal("catalog sweep disagreed with backend presence observation")
+		if announced != 0 {
+			t.Fatal("known corrupt/missing bytes retained a publication marker")
 		}
-		if !presenceHint {
-			if _, err := os.Stat(f.store.catalogPath(d)); !errors.Is(err, os.ErrNotExist) || f.store.used != 0 {
-				t.Fatalf("missing backend data retained catalog quota: %v", err)
-			}
+		if _, err := os.Stat(f.store.catalogPath(d)); !errors.Is(err, os.ErrNotExist) || f.store.used != 0 {
+			t.Fatalf("failed verification retained catalog quota: %v", err)
 		}
 		// A stale positive must never cause a verified re-upload to skip repair.
 		if err := f.store.Put(context.Background(), d, bytes.NewReader(data)); err != nil {
