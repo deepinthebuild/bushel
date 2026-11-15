@@ -19,11 +19,13 @@ An 8 MiB pipeline comparison includes the full blob hash, RepMaxCDC, and every
 chunk hash, excluding storage and manifest assembly equally. Median throughput
 was 1214 MB/s for SHA-256 and 1398 MB/s for BLAKE3 (about 15% faster).
 BLAKE3 wins on typical chunks by about 30%; tiny-blob results do not drive this
-decision. We accept the measured throughput cost of SHA-256 for one identity
-scheme compatible with the
-usual Bazel and IPFS path, standard-library acceleration, and no direct Bushel
-BLAKE3 dependency. Supporting a second digest would multiply identities and
-reduce deduplication unless every participant agreed on it.
+decision. We accept the measured throughput cost of SHA-256 to use SHA-256
+REAPI blob identities and one standard-library hash implementation throughout.
+Bitswap does not require SHA-256: CIDv1 supports other multihashes, including
+BLAKE3. Public IPFS bootstrap discovery does not constrain the content hash.
+Supporting alternate blob identities would require rehashing the original bytes
+and maintaining verified mappings; hashes cannot be translated directly.
+Bushel uses only SHA-256.
 
 Reproduce from the checkout root:
 

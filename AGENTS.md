@@ -31,6 +31,8 @@ Before pushing each commit, request reviews from the persistent Go style,
 performance/benchmarking, distributed systems, and security reviewer sessions.
 Resolve blocking findings before publishing. Preserve v1 wire compatibility;
 changes to chunking parameters require a new protocol version.
+After all four reviews and required CI checks pass, agents may merge their own
+PRs. Preserve the logically independent commits when merging.
 
 Never commit machine-specific absolute paths, identifying host details, secrets,
 or private keys. Use paths relative to the checkout root in committed files.
