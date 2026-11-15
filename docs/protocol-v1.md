@@ -69,3 +69,26 @@ discovery and explicit-peer reconnect attempts run at most once per five minutes
 The [Bushel provider DHT](routing-v1.md) extends lookup beyond connected peers
 without changing these manifest or Bitswap formats. A miss is not proof of
 global absence. Cached chunks and full blobs are reverified before acceptance.
+
+## Optional seed offers
+
+Willing receivers advertise `/bushel/seed/1.0.0`. An offer stream sends exactly
+32 SHA-256 bytes followed by an unsigned big-endian 64-bit blob size. The sender
+keeps its write side open; EOF, reset, or additional input cancels an active pull.
+The response is one byte followed by EOF: `0` declines/fails, `1` reports complete
+verified backend and catalog publication. Each stream binds the response to its
+offered digest and authenticated peer. Acceptance alone never counts as a copy.
+
+The receiver requests the manifest from that peer, then sends bounded WANT_BLOCK
+windows using standard Bitswap 1.2.0 messages on
+`/bushel/seed/ipfs/bitswap/1.2.0`. Chunk CIDs use the hash/size encoding above.
+These requests use only the offering connection: there is no other-peer fanout,
+provider search, or dial. Seed serving is bound to the active offer's recipient,
+manifest chunks, and byte allowance; repeated requests consume that allowance.
+Each sender permits one active offer per recipient, with at most two active
+offers to different recipients. Bitswap requests identify chunks rather than
+offers, so this restriction keeps each transfer's byte allowance independent.
+Responses also require a current WANT for that grant; a delayed read from an
+earlier offer cannot consume a successor's allowance before its request.
+Chunks, full blob digest, and canonical chunk cuts are verified before publication.
+Public IPFS receives only the fixed rendezvous announcement.

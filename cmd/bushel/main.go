@@ -20,6 +20,7 @@ import (
 	"github.com/buildbarn/bb-storage/pkg/program"
 	"github.com/deepinthebuild/bushel/internal/cas"
 	"github.com/deepinthebuild/bushel/internal/p2p"
+	"github.com/deepinthebuild/bushel/internal/publication"
 	"github.com/deepinthebuild/bushel/internal/reapi"
 	"github.com/deepinthebuild/bushel/internal/storage"
 	"github.com/libp2p/go-libp2p/core/crypto"
@@ -33,14 +34,17 @@ func (v *values) String() string     { return strings.Join(*v, ",") }
 func (v *values) Set(s string) error { *v = append(*v, s); return nil }
 
 type config struct {
-	data, grpc, instance           string
-	storageConfig                  string
-	localStorage                   int64
-	listen, peers, bootstrap       values
-	discovery                      bool
-	disk                           int64
-	timeout                        time.Duration
-	routingRecords, routingPerPeer int
+	data, grpc, instance                 string
+	storageConfig                        string
+	localStorage                         int64
+	listen, peers, bootstrap             values
+	discovery                            bool
+	disk                                 int64
+	timeout                              time.Duration
+	routingRecords, routingPerPeer       int
+	publicationPolicy                    publication.Policy
+	acceptSeeds                          bool
+	sendBytes, receiveBytes, seedMaxBlob int64
 }
 
 func parse(args []string) (config, error) {
@@ -59,11 +63,25 @@ func parse(args []string) (config, error) {
 	fs.DurationVar(&c.timeout, "request-timeout", 30*time.Second, "maximum peer request duration")
 	fs.IntVar(&c.routingRecords, "routing-records", 32768, "maximum cached blob-provider pairs")
 	fs.IntVar(&c.routingPerPeer, "routing-records-per-peer", 0, "maximum cached pairs per provider (0: up to 16384 within total limit)")
+	var policy string
+	fs.StringVar(&policy, "federation-publish", "off", "publication classes: off, external, all, or comma-separated external,main,apparent,unknown")
+	fs.BoolVar(&c.acceptSeeds, "federation-accept", false, "accept bounded unsolicited blob offers from Bushel peers")
+	fs.Int64Var(&c.sendBytes, "federation-send-bytes-per-hour", 1<<30, "maximum charged outgoing publication bytes per hour")
+	fs.Int64Var(&c.receiveBytes, "federation-receive-bytes-per-hour", 1<<30, "maximum admitted incoming publication bytes per hour")
+	fs.Int64Var(&c.seedMaxBlob, "federation-max-blob-bytes", 256<<20, "largest unsolicited blob to accept")
 	if err := fs.Parse(args); err != nil {
 		return c, err
 	}
 	if fs.NArg() != 0 {
 		return c, errors.New("unexpected positional arguments")
+	}
+	var policyErr error
+	c.publicationPolicy, policyErr = publication.ParsePolicy(policy)
+	if policyErr != nil {
+		return c, policyErr
+	}
+	if c.sendBytes < 1 || c.sendBytes > 1<<40 || c.receiveBytes < 1 || c.receiveBytes > 1<<40 || c.seedMaxBlob < 1 || c.seedMaxBlob > cas.MaxBlobSize {
+		return c, errors.New("invalid federation byte limits")
 	}
 	if c.data == "" || c.disk < 1<<20 || c.timeout <= 0 {
 		return c, errors.New("invalid state directory, disk budget, or timeout")
@@ -251,11 +269,24 @@ func serve(ctx context.Context, c config, store *cas.Store) error {
 		return err
 	}
 	network, err := p2p.New(ctx, p2p.Config{Store: store, PrivateKey: key, Listen: c.listen, Peers: peers, Bootstrap: bootstrap, Discovery: c.discovery, RequestTimeout: c.timeout, MaxPeers: 64,
-		RoutingRecords: c.routingRecords, RoutingRecordsPerPeer: c.routingPerPeer})
+		RoutingRecords: c.routingRecords, RoutingRecordsPerPeer: c.routingPerPeer,
+		AcceptSeeds: c.acceptSeeds, SeedMaxBlobBytes: c.seedMaxBlob, SeedBytesPerHour: c.receiveBytes})
 	if err != nil {
 		return err
 	}
 	defer network.Close()
+	var publisher *publication.Publisher
+	if c.publicationPolicy != 0 {
+		publisher, err = publication.New(ctx, filepath.Join(c.data, "publication"), store, network, publication.Options{Policy: c.publicationPolicy, Instance: c.instance, BytesPerHour: c.sendBytes})
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if err := publisher.Close(); err != nil {
+				slog.Error("federated publication stopped with state error", "error", err)
+			}
+		}()
+	}
 	address, err := loopbackAddress(c.grpc)
 	if err != nil {
 		return err
@@ -266,15 +297,32 @@ func serve(ctx context.Context, c config, store *cas.Store) error {
 	}
 	listener := newBoundedListener(l, 16)
 	defer listener.Close()
-	server := reapi.New(store, network, c.instance).GRPC()
+	api := reapi.New(store, network, c.instance)
+	if publisher != nil {
+		api.WithPublicationObserver(publisher)
+	}
+	server := api.GRPC()
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.Serve(listener) }()
 	slog.Info("bushel ready", "grpc", listener.Addr().String(), "peer", network.ID().String(), "addresses", network.Addrs(), "discovery", c.discovery)
-	select {
-	case err := <-serveErr:
-		server.Stop()
-		return err
-	case <-ctx.Done():
+	var report <-chan time.Time
+	if publisher != nil {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		report = ticker.C
+	}
+serving:
+	for {
+		select {
+		case err := <-serveErr:
+			server.Stop()
+			return err
+		case <-ctx.Done():
+			break serving
+		case <-report:
+			s := publisher.Stats()
+			slog.Info("federated publication progress", "queued", s.Queued, "queued_bytes", s.QueuedBytes, "oldest_pending_seconds", s.OldestPendingSeconds, "unconfirmed_attempts", s.UnconfirmedAttempts, "waiting", s.Waiting, "completed", s.Completed, "verified_peers", s.VerifiedPeers, "exhausted", s.Exhausted, "expired", s.Expired, "dropped", s.Dropped, "charged_bytes", s.ChargedBytes, "charged_offers", s.ChargedOffers, "state_failed", s.PersistenceFailed)
+		}
 	}
 	done := make(chan struct{})
 	go func() { server.GracefulStop(); close(done) }()

@@ -46,6 +46,12 @@ type Config struct {
 	Peers          []peer.AddrInfo
 	Discovery      bool
 	RequestTimeout time.Duration
+	// AcceptSeeds explicitly permits receiver-pull replication. Zero byte
+	// limits default to a 256 MiB blob and 1 GiB per rolling hour. The hourly
+	// allowance is process-local and may be at most 1 TiB.
+	AcceptSeeds      bool
+	SeedMaxBlobBytes int64
+	SeedBytesPerHour int64
 	// MaxPeers bounds content connections, from 8 to 128 (default 64).
 	MaxPeers int
 	// RoutingRecords bounds cached blob/provider pairs, from 64 to 1048576
@@ -73,6 +79,7 @@ type Node struct {
 	announcer       atomic.Pointer[Announcer]
 	gate            *dialGate
 	bitswap         *bitswap.Bitswap
+	seeds           *seedService
 	ctx             context.Context
 	cancel          context.CancelFunc
 	timeout         time.Duration
@@ -95,6 +102,10 @@ func New(ctx context.Context, cfg Config) (*Node, error) {
 func newNode(ctx context.Context, cfg Config, filter func([]ma.Multiaddr) []ma.Multiaddr) (_ *Node, err error) {
 	if cfg.Store == nil || cfg.PrivateKey == nil {
 		return nil, errors.New("store and private key are required")
+	}
+	seedLimits, err := seedConfiguration(cfg)
+	if err != nil {
+		return nil, err
 	}
 	if cfg.MaxPeers == 0 {
 		cfg.MaxPeers = 64
@@ -164,6 +175,7 @@ func newNode(ctx context.Context, cfg Config, filter func([]ma.Multiaddr) []ma.M
 		bitswap.MaxOutstandingBytesPerPeer(2<<20), bitswap.MaxQueuedWantlistEntriesPerPeer(256), bitswap.MaxCidSize(sizedChunkCIDSize),
 		bitswap.WithTargetMessageSize(1<<20), bitswap.WithoutDuplicatedBlockStats(),
 		bitswap.WithPeerBlockRequestFilter(func(_ peer.ID, c cid.Cid) bool { _, err := sizedChunkDigest(c); return err == nil }))
+	n.initSeeds(cfg, seedLimits)
 	if err := n.initRouting(cfg); err != nil {
 		return nil, err
 	}
@@ -228,6 +240,10 @@ func (n *Node) Close() error {
 		}
 		if n.bitswap != nil {
 			n.closeErr = errors.Join(n.closeErr, n.bitswap.Close())
+		}
+		if n.seeds != nil {
+			n.seeds.server.Close()
+			n.seeds.network.Stop()
 		}
 		if n.host != nil {
 			n.closeErr = errors.Join(n.closeErr, n.host.Close())
@@ -502,6 +518,12 @@ func (n *Node) importManifest(ctx context.Context, m cas.Manifest) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	session := n.bitswap.NewSession(ctx)
+	return n.importManifestChunks(ctx, m, func(ctx context.Context, keys []cid.Cid, wanted map[string]cas.Digest, window map[cas.Digest][]byte) error {
+		return n.receiveWindow(ctx, session, keys, wanted, window)
+	})
+}
+
+func (n *Node) importManifestChunks(ctx context.Context, m cas.Manifest, receive func(context.Context, []cid.Cid, map[string]cas.Digest, map[cas.Digest][]byte) error) error {
 	next := 0
 	var window map[cas.Digest][]byte
 	return n.store.Import(ctx, m, func(ctx context.Context, d cas.Digest) ([]byte, error) {
@@ -529,7 +551,7 @@ func (n *Node) importManifest(ctx context.Context, m cas.Manifest) error {
 				}
 			}
 			if len(keys) != 0 {
-				if err := n.receiveWindow(ctx, session, keys, wanted, window); err != nil {
+				if err := receive(ctx, keys, wanted, window); err != nil {
 					return nil, &peerTransferError{err}
 				}
 			}
