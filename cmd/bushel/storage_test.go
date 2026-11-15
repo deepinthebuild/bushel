@@ -22,11 +22,16 @@ func daemonSubprocess(t *testing.T) (string, bool) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, exe, "-test.run=^TestDaemonStartsOfflineAndStops$")
-	cmd.Env = append(os.Environ(), "BUSHEL_TEST_DAEMON_ROOT="+t.TempDir())
-	cmd.WaitDelay = 5 * time.Second
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("daemon subprocess: %v\n%s", err, out)
+	root := t.TempDir()
+	// Reopen only after the first owner exits: Buildbarn mmap resources remain
+	// process-owned even after the daemon has drained its handlers and closed.
+	for range 2 {
+		cmd := exec.CommandContext(ctx, exe, "-test.run=^TestDaemonStartsOfflineAndStops$")
+		cmd.Env = append(os.Environ(), "BUSHEL_TEST_DAEMON_ROOT="+root)
+		cmd.WaitDelay = 5 * time.Second
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("daemon subprocess: %v\n%s", err, out)
+		}
 	}
 	return "", false
 }

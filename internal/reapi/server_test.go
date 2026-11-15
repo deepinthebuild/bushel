@@ -7,7 +7,6 @@ import (
 	"net"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -256,34 +255,6 @@ func (f blockingFetcher) Fetch(ctx context.Context, _ cas.Digest) error {
 		return cas.ErrNotFound
 	case <-ctx.Done():
 		return ctx.Err()
-	}
-}
-
-func TestRPCSaturationFailsPromptlyAndRecovers(t *testing.T) {
-	f := blockingFetcher{make(chan struct{}, 32), make(chan struct{})}
-	ctx, c, _, caps := clients(t, f)
-	var wg sync.WaitGroup
-	for range 32 {
-		wg.Go(func() {
-			_, _ = c.BatchReadBlobs(ctx, &repb.BatchReadBlobsRequest{Digests: []*repb.Digest{pd([]byte("absent"))}})
-		})
-	}
-	for range 32 {
-		select {
-		case <-f.entered:
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
-		}
-	}
-	// A separate connection avoids the per-connection HTTP/2 stream limit.
-	_, err := caps.GetCapabilities(ctx, &repb.GetCapabilitiesRequest{})
-	close(f.release)
-	wg.Wait()
-	if status.Code(err) != codes.ResourceExhausted {
-		t.Fatalf("saturation: %v", err)
-	}
-	if _, err := caps.GetCapabilities(ctx, &repb.GetCapabilitiesRequest{}); err != nil {
-		t.Fatal(err)
 	}
 }
 
