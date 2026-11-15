@@ -39,9 +39,12 @@ bazel run @rules_go//go -- -C benchmarks/digests test ./...
 The Bazel-only analyzer dependency in `MODULE.bazel` tracks the `x/tools`
 version in `go.mod`; update those pins together when changing it.
 
-After changing `internal/publication/pb/journal.proto`, run
-`bazel run //internal/publication/pb:update` and commit `journal.pb.go`.
-`bazel test //...` includes the `update_test` freshness check.
+After changing a schema, run its generation target and commit the generated Go:
+
+- `internal/publication/pb/journal.proto`: `bazel run //internal/publication/pb:update`.
+- `internal/membership/pb/membership.proto`: `bazel run //internal/membership/pb:update`.
+
+`bazel test //...` includes both `update_test` freshness checks.
 Bazel pins the official prebuilt `protoc` and Go generator; native compiler
 fallback uses hermetic-llvm. Runtime builds consume the checked-in Go source.
 
@@ -67,6 +70,7 @@ versions or file markers, or add legacy compatibility. Update format documentati
 and golden fixtures together. Freeze compatibility at that release.
 After all four reviews and required CI checks pass, agents may merge their own
 PRs. Preserve the logically independent commits when merging.
+Label future issues created by agents with `clanker made`.
 
 Never commit machine-specific absolute paths, identifying host details, secrets,
 or private keys. Use paths relative to the checkout root in committed files.

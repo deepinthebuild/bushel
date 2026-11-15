@@ -75,6 +75,10 @@ peers. Verified uploads are announced asynchronously; catalog scans recover
 restarts and renew availability hints. A miss does not prove global absence.
 Public discovery and serving new peers require reachable TCP addresses.
 
+Connected peers exchange [binary fuse membership hints](docs/membership.md)
+for complete blob identities. Compact snapshots and recent additions prioritize
+manifest lookups; stale hints and false positives always retain fallback.
+
 Optional federated publication seeds eligible uploads to two distinct willing
 peers. Enable a producer with `-federation-publish=external` and receivers with
 `-federation-accept`. Workspace metadata selects publication queues; ordinary

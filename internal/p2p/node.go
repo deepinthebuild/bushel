@@ -63,6 +63,7 @@ type Config struct {
 	// Tests can drive maintenance without real renewal intervals. Production
 	// callers outside this package use the bounded defaults.
 	announcements         AnnouncerOptions
+	membership            membershipOptions
 	disableRoutingRefresh bool
 }
 
@@ -80,6 +81,7 @@ type Node struct {
 	gate            *dialGate
 	bitswap         *bitswap.Bitswap
 	seeds           *seedService
+	membership      *membershipService
 	ctx             context.Context
 	cancel          context.CancelFunc
 	timeout         time.Duration
@@ -183,6 +185,9 @@ func newNode(ctx context.Context, cfg Config, filter func([]ma.Multiaddr) []ma.M
 		if err := n.initDiscovery(cfg); err != nil {
 			return nil, err
 		}
+	}
+	if err := n.initMembership(cfg.membership); err != nil {
+		return nil, err
 	}
 	if cfg.Discovery || len(cfg.Peers) > 0 {
 		n.wg.Add(1)
@@ -403,24 +408,46 @@ type manifestResult struct {
 // Both concurrent reads and buffered results are bounded by manifestWorkers.
 func (n *Node) lookupManifests(ctx context.Context, ids []peer.ID, d cas.Digest) (<-chan manifestResult, func()) {
 	ctx, cancel := context.WithCancel(ctx)
-	jobs := make(chan peer.ID, len(ids))
-	for _, id := range ids {
-		jobs <- id
+	type lookup struct {
+		id       peer.ID
+		positive bool
 	}
-	close(jobs)
+	preferred, fallback := make(chan lookup, len(ids)), make(chan lookup, len(ids))
+	now := time.Now()
+	for _, id := range ids {
+		positive := n.membership != nil && n.membership.positive(id, d, now)
+		if positive {
+			preferred <- lookup{id: id, positive: true}
+		} else {
+			fallback <- lookup{id: id}
+		}
+	}
+	close(preferred)
+	close(fallback)
 	results := make(chan manifestResult, manifestWorkers)
 	var workers sync.WaitGroup
-	for range min(manifestWorkers, len(ids)) {
+	for i := range min(manifestWorkers, len(ids)) {
+		first, second := preferred, fallback
+		if i%2 != 0 {
+			first, second = second, first
+		}
 		workers.Go(func() {
-			for id := range jobs {
-				if ctx.Err() != nil {
-					return
-				}
-				m, err := n.manifest(ctx, id, d)
-				select {
-				case results <- manifestResult{m, err}:
-				case <-ctx.Done():
-					return
+			// Each class always has lookup capacity. Once a queue drains its
+			// workers help the other; hints never suppress ordinary fallback.
+			for _, jobs := range []<-chan lookup{first, second} {
+				for job := range jobs {
+					if ctx.Err() != nil {
+						return
+					}
+					m, err := n.manifest(ctx, job.id, d)
+					if n.membership != nil {
+						n.membership.observeManifest(job.positive, err)
+					}
+					select {
+					case results <- manifestResult{m, err}:
+					case <-ctx.Done():
+						return
+					}
 				}
 			}
 		})
@@ -479,6 +506,9 @@ func (n *Node) Fetch(ctx context.Context, d cas.Digest) error {
 	}
 	if ok, err := n.store.Has(ctx, d); err != nil || ok {
 		return err
+	}
+	if n.membership != nil {
+		n.membership.used.Store(true)
 	}
 	ids := n.host.Network().Peers()
 	slices.Sort(ids)

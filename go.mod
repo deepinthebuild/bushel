@@ -3,6 +3,7 @@ module github.com/deepinthebuild/bushel
 go 1.27.4
 
 require (
+	github.com/FastFilter/xorfilter v0.5.1
 	github.com/bazelbuild/remote-apis v0.0.0-20261110225606-e0c0554bfc8a
 	github.com/buildbarn/bb-storage v0.0.0-20261112085002-8d2acac49b3b
 	github.com/buildbarn/go-cdc v0.0.10
