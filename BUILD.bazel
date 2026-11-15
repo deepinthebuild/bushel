@@ -2,6 +2,7 @@ load("@gazelle//:def.bzl", "gazelle")
 
 # gazelle:prefix github.com/deepinthebuild/bushel
 # gazelle:proto disable_global
+# gazelle:resolve go github.com/deepinthebuild/bushel/internal/publication/pb //internal/publication/pb
 # gazelle:exclude benchmarks
 # gazelle:exclude bin
 # gazelle:exclude data

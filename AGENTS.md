@@ -33,6 +33,12 @@ module is excluded from Gazelle; check it with:
 bazel run @rules_go//go -- -C benchmarks/digests test ./...
 ```
 
+After changing `internal/publication/pb/journal.proto`, run
+`bazel run //internal/publication/pb:update` and commit `journal.pb.go`.
+`bazel test //...` includes the `update_test` freshness check.
+Bazel pins the official prebuilt `protoc` and Go generator; native compiler
+fallback uses hermetic-llvm. Runtime builds consume the checked-in Go source.
+
 Prefer pure state transitions with explicit inputs so property tests can cover
 invariants. Put property tests and fuzz seeds in ordinary `go_test` targets;
 keep network and filesystem adapters thin. Preserve failing fuzz inputs as
@@ -49,9 +55,10 @@ Bitswap pulls restricted to the offering peer. See docs/federation.md.
 
 Before pushing each commit, request reviews from the persistent Go style,
 performance/benchmarking, distributed systems, and security reviewer sessions.
-Resolve blocking findings before publishing. Until the first stable release,
-wire changes may break compatibility without a version bump; update the format
-documentation and golden fixtures together. Freeze compatibility at that release.
+Resolve blocking findings before publishing. Until the user declares the first
+stable release, change file schemas and wire formats in place: do not increment
+versions or file markers, or add legacy compatibility. Update format documentation
+and golden fixtures together. Freeze compatibility at that release.
 After all four reviews and required CI checks pass, agents may merge their own
 PRs. Preserve the logically independent commits when merging.
 
