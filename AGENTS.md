@@ -15,6 +15,13 @@ Use Bazelisk to respect `.bazelversion`; `MODULE.bazel` pins the Go SDK and rule
 Windows needs Git Bash available to Bazel (`BAZEL_SH` can select it).
 Run `bazel test --config=race //...` on Linux for concurrency changes.
 
+Use [hermetic-llvm](https://github.com/hermeticbuild/hermetic-llvm) for all
+native C/C++ dependencies and cgo, including race tests. `MODULE.bazel` pins
+and registers its toolchains; host C/C++ toolchain detection is disabled.
+Keep ordinary Go builds in pure mode unless a dependency requires cgo.
+`bazel run @rules_go//go` defaults to `CGO_ENABLED=0`; use Bazel build/test
+targets for native compilation so it receives the configured C/C++ toolchain.
+
 After adding Go files or changing `go.mod`/`go.sum`, run `bazel mod tidy` and
 `bazel run //:gazelle`. Commit generated BUILD files and `MODULE.bazel.lock`.
 Check generation with `bazel run //:gazelle -- -mode=diff`. Keep Go dependencies
