@@ -43,6 +43,10 @@ chunk backend or translate only a subset of that schema. See docs/storage.md.
 Inject explicit backends for properties. Exercise persistent Buildbarn lifecycle
 in subprocesses because its local mappings are process-owned resources.
 
+Federation uses explicit REAPI observations, never generic CAS commit callbacks,
+to avoid forwarding cascades. Persist sender charges before offers; keep actual
+Bitswap pulls restricted to the offering peer. See docs/federation.md.
+
 Before pushing each commit, request reviews from the persistent Go style,
 performance/benchmarking, distributed systems, and security reviewer sessions.
 Resolve blocking findings before publishing. Until the first stable release,

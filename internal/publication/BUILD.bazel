@@ -1,0 +1,40 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "publication",
+    srcs = [
+        "journal.go",
+        "persist.go",
+        "publisher.go",
+        "ready.go",
+        "state.go",
+    ],
+    importpath = "github.com/deepinthebuild/bushel/internal/publication",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/cas",
+        "//internal/workspace",
+        "@com_github_gofrs_flock//:flock",
+        "@com_github_libp2p_go_libp2p//core/peer",
+    ],
+)
+
+go_test(
+    name = "publication_test",
+    srcs = [
+        "benchmark_test.go",
+        "journal_test.go",
+        "persist_test.go",
+        "publisher_test.go",
+        "ready_test.go",
+        "state_test.go",
+    ],
+    embed = [":publication"],
+    deps = [
+        "//internal/cas",
+        "//internal/workspace",
+        "@com_github_libp2p_go_libp2p//core/peer",
+        "@com_github_multiformats_go_multihash//:go-multihash",
+        "@net_pgregory_rapid//:rapid",
+    ],
+)

@@ -73,6 +73,12 @@ peers. Verified uploads are announced asynchronously; catalog scans recover
 restarts and renew availability hints. A miss does not prove global absence.
 Public discovery and serving new peers require reachable TCP addresses.
 
+Optional federated publication seeds eligible uploads to two distinct willing
+peers. Enable a producer with `-federation-publish=external` and receivers with
+`-federation-accept`. Workspace metadata selects publication queues; ordinary
+writes finish locally and peer reads populate the local CAS. Both federation
+options default to off. See [publication policy, limits, and wire format](docs/federation.md).
+
 The routing index defaults to 32,768 blob/provider pairs, at most 16,384 from
 one provider. `-routing-records` and `-routing-records-per-peer` tune this RAM
 budget independently of CAS disk capacity. Saturation evicts old hints and can
