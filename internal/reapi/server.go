@@ -42,37 +42,28 @@ func New(store *cas.Store, fetcher Fetcher, instance string) *Server {
 	return &Server{store: store, fetcher: fetcher, instance: instance}
 }
 
-// GRPC bounds each message and admits at most 32 active RPCs across connections.
+// GRPC admits unary calls before decoding and streams before their first receive.
+// See docs/grpc-limits.md for the pinned transport assumptions and memory budget.
 func (s *Server) GRPC() *grpc.Server {
-	slots := make(chan struct{}, 32)
-	enter := func(ctx context.Context) error {
-		select {
-		case slots <- struct{}{}:
-			return nil
-		case <-ctx.Done():
-			return status.FromContextError(ctx.Err()).Err()
-		default:
-			return status.Error(codes.ResourceExhausted, "too many active RPCs")
-		}
-	}
-	g := grpc.NewServer(grpc.WaitForHandlers(true), grpc.MaxRecvMsgSize(MaxBatchBytes+(256<<10)), grpc.MaxSendMsgSize(MaxBatchBytes+(256<<10)), grpc.MaxConcurrentStreams(32),
-		grpc.UnaryInterceptor(func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-			if err := enter(ctx); err != nil {
-				return nil, err
-			}
-			defer func() { <-slots }()
-			return handler(ctx, req)
-		}),
+	admission := make(rpcAdmission, maxActiveRPCs)
+	g := grpc.NewServer(grpc.WaitForHandlers(true),
+		grpc.MaxRecvMsgSize(maxMessageBytes), grpc.MaxSendMsgSize(maxMessageBytes),
+		grpc.MaxConcurrentStreams(maxStreamsPerConnection),
+		grpc.StaticStreamWindowSize(transportWindowBytes), grpc.StaticConnWindowSize(transportWindowBytes),
+		grpc.MaxHeaderListSize(maxHeaderBytes),
 		grpc.StreamInterceptor(func(srv any, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-			if err := enter(stream.Context()); err != nil {
+			if err := admission.enter(stream.Context()); err != nil {
 				return err
 			}
-			defer func() { <-slots }()
-			return handler(srv, stream)
+			lease := &rpcLease{admission: admission}
+			lease.owners.Store(1)
+			defer lease.release()
+			return handler(srv, admittedStream{ServerStream: stream, ctx: context.WithValue(stream.Context(), rpcLeaseKey{}, lease)})
 		}))
-	repb.RegisterContentAddressableStorageServer(g, s)
-	repb.RegisterCapabilitiesServer(g, s)
-	bspb.RegisterByteStreamServer(g, s)
+	registrar := admittedRegistrar{server: g, admission: admission}
+	repb.RegisterContentAddressableStorageServer(registrar, s)
+	repb.RegisterCapabilitiesServer(registrar, s)
+	registerByteStream(registrar, s)
 	return g
 }
 
@@ -315,7 +306,9 @@ func (s *Server) Write(stream bspb.ByteStream_WriteServer) error {
 	defer close(stop)
 	// One receive pump permits a concurrent commit to finish a stalled upload.
 	// Returning from the handler cancels any pending transport Recv.
+	releaseReceiver := retainReceiver(stream.Context())
 	go func() {
+		defer releaseReceiver()
 		for {
 			req, err := stream.Recv()
 			select {

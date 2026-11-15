@@ -62,6 +62,7 @@ jobs:
             'internal/workspace FuzzMetadataAndLabel' \
             'internal/publication FuzzPublicationSnapshot' \
             'internal/publication FuzzPublicationJournal' \
+            'internal/reapi FuzzUnaryAdmission' \
             'internal/reapi FuzzParseResource' \
             'internal/reapi FuzzUploadTransition'; do
             read -r package fuzz <<< "$target"

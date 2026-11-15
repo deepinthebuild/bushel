@@ -295,7 +295,7 @@ func serve(ctx context.Context, c config, store *cas.Store) error {
 	if err != nil {
 		return err
 	}
-	listener := newBoundedListener(l, 16)
+	listener := newBoundedListener(l, reapi.MaxConnections)
 	defer listener.Close()
 	api := reapi.New(store, network, c.instance)
 	if publisher != nil {

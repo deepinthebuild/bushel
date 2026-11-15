@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -83,24 +84,21 @@ func TestDaemonStartsOfflineAndStops(t *testing.T) {
 	if !child {
 		return
 	}
+	ready := make(chan struct{})
+	previous := slog.Default()
+	slog.SetDefault(slog.New(daemonReadyLog{Handler: slog.NewTextHandler(os.Stderr, nil), ready: ready}))
+	defer slog.SetDefault(previous)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	c := config{data: root, grpc: "127.0.0.1:0", listen: values{"/ip4/127.0.0.1/tcp/0"}, discovery: false, disk: 64 << 20, localStorage: 32 << 20, timeout: 5 * time.Second}
 	result := make(chan error, 1)
 	go func() { result <- run(ctx, c) }()
-	// The state lock and identity file establish that startup reached initialization.
-	deadline := time.After(5 * time.Second)
-	for {
-		if _, err := os.Stat(filepath.Join(c.data, "identity.key")); err == nil {
-			break
-		}
-		select {
-		case err := <-result:
-			t.Fatalf("startup: %v", err)
-		case <-deadline:
-			t.Fatal("startup timeout")
-		case <-time.After(10 * time.Millisecond):
-		}
+	select {
+	case <-ready:
+	case err := <-result:
+		t.Fatalf("startup: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("startup timeout")
 	}
 	cancel()
 	select {
@@ -111,4 +109,18 @@ func TestDaemonStartsOfflineAndStops(t *testing.T) {
 	case <-time.After(8 * time.Second):
 		t.Fatal("shutdown timeout")
 	}
+}
+
+// A readiness event, rather than an old identity file or a sleep, establishes
+// that each subprocess has reopened storage and started serving.
+type daemonReadyLog struct {
+	slog.Handler
+	ready chan struct{}
+}
+
+func (l daemonReadyLog) Handle(ctx context.Context, record slog.Record) error {
+	if record.Message == "bushel ready" {
+		close(l.ready)
+	}
+	return l.Handler.Handle(ctx, record)
 }
