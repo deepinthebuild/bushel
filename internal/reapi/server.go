@@ -35,6 +35,7 @@ type Server struct {
 	store    *cas.Store
 	fetcher  Fetcher
 	instance string
+	observer PublicationObserver
 }
 
 func New(store *cas.Store, fetcher Fetcher, instance string) *Server {
@@ -167,6 +168,7 @@ func (s *Server) FindMissingBlobs(ctx context.Context, req *repb.FindMissingBlob
 	for _, d := range missing {
 		resp.MissingBlobDigests = append(resp.MissingBlobDigests, &repb.Digest{Hash: d.Hex(), SizeBytes: d.Size})
 	}
+	s.observePresence(ctx, digests, missing)
 	return resp, nil
 }
 
@@ -198,6 +200,9 @@ func (s *Server) BatchUpdateBlobs(ctx context.Context, req *repb.BatchUpdateBlob
 			if errors.Is(err, cas.ErrCorrupt) {
 				err = status.Error(codes.InvalidArgument, "upload digest mismatch")
 			}
+		}
+		if err == nil {
+			s.observeCommit(ctx, d)
 		}
 		resp.Responses = append(resp.Responses, &repb.BatchUpdateBlobsResponse_Response{Digest: r.GetDigest(), Status: itemStatus(err)})
 	}
@@ -291,12 +296,19 @@ func (s *Server) Write(stream bspb.ByteStream_WriteServer) error {
 	if err != nil {
 		return err
 	}
+	complete := func() error {
+		if err := stream.SendAndClose(&bspb.WriteResponse{CommittedSize: d.Size}); err != nil {
+			return err
+		}
+		s.observeCommit(stream.Context(), d)
+		return nil
+	}
 	committed, unwatch := s.store.WatchCommit(d)
 	defer unwatch()
 	if ok, err := s.store.PublishExisting(stream.Context(), d); err != nil {
 		return rpcError(err)
 	} else if ok {
-		return stream.SendAndClose(&bspb.WriteResponse{CommittedSize: d.Size})
+		return complete()
 	}
 	requests := make(chan uploadMessage, 1)
 	stop := make(chan struct{})
@@ -319,18 +331,15 @@ func (s *Server) Write(stream bspb.ByteStream_WriteServer) error {
 	r := &uploadReader{ctx: stream.Context(), requests: requests, committed: committed, current: first,
 		state: uploadState{resource: first.ResourceName, size: d.Size}}
 	if err := s.store.Put(stream.Context(), d, r); err != nil {
-		if errors.Is(err, errCommitted) {
-			return stream.SendAndClose(&bspb.WriteResponse{CommittedSize: d.Size})
-		}
 		if ok, _ := s.store.PublishExisting(stream.Context(), d); ok {
-			return stream.SendAndClose(&bspb.WriteResponse{CommittedSize: d.Size})
+			return complete()
 		}
 		if errors.Is(err, cas.ErrCorrupt) {
 			return status.Error(codes.InvalidArgument, "upload digest or size mismatch")
 		}
 		return rpcError(err)
 	}
-	return stream.SendAndClose(&bspb.WriteResponse{CommittedSize: d.Size})
+	return complete()
 }
 
 type uploadReader struct {
@@ -398,6 +407,7 @@ func (s *Server) QueryWriteStatus(ctx context.Context, req *bspb.QueryWriteStatu
 	if !ok {
 		return nil, status.Error(codes.NotFound, "upload not committed; restart at zero")
 	}
+	s.observeCommit(ctx, d)
 	return &bspb.QueryWriteStatusResponse{CommittedSize: d.Size, Complete: true}, nil
 }
 
