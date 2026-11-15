@@ -6,9 +6,10 @@ bazel build //cmd/bushel
 bazel test //...
 ```
 
-Builds and tests run Go analysis through Bazel's validation aspect and rules_go
-`nogo`; no separate SDK vet command is needed. Keep the analyzer list aligned
-with the pinned SDK on upgrades. See [analysis](docs/go-analysis.md) for scope.
+Builds and tests run Go analysis through Bazel's validation aspect and rules_go's
+`tools_nogo` preset; no separate SDK vet command is needed. Use the upstream
+preset rather than maintaining a separate analyzer list. See
+[analysis](docs/go-analysis.md) for scope.
 
 Use `bazel run //cmd/bushel -- ...` to launch the daemon. The checked-in
 `run --run_in_cwd` preserves the invocation directory for relative data paths.
@@ -30,9 +31,6 @@ After adding Go files or changing `go.mod`/`go.sum`, run `bazel mod tidy` and
 Check generation with `bazel run //:gazelle -- -mode=diff`. Keep Go dependencies
 in `go.mod`; Bzlmod imports them through `go_deps`. Use the pinned SDK for module
 edits: `bazel run @rules_go//go -- mod tidy`.
-
-The Bazel-only analyzer dependency in `MODULE.bazel` tracks the `x/tools`
-version in `go.mod`; update those pins together when changing it.
 
 After changing a schema, run its generation target and commit the generated Go:
 
