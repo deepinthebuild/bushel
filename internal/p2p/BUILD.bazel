@@ -68,6 +68,7 @@ go_test(
         "membership_peers_test.go",
         "membership_transport_test.go",
         "node_test.go",
+        "routing_capacity_test.go",
         "routing_store_test.go",
         "routing_test.go",
         "seed_admission_test.go",

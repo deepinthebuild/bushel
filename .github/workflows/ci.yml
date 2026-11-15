@@ -57,6 +57,7 @@ jobs:
             'internal/membership FuzzMembershipSnapshot' \
             'internal/membership FuzzMembershipRequest' \
             'internal/p2p FuzzSizedCIDCanonicalRoundTrip' \
+            'internal/p2p FuzzRoutingCapacityHistory' \
             'internal/p2p FuzzSeedOfferParsing' \
             'internal/workspace FuzzMetadataAndLabel' \
             'internal/publication FuzzPublicationSnapshot' \
