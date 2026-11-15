@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -29,6 +28,7 @@ type Store struct {
 	readReserved          int64
 	operations            chan struct{}
 	watchers              map[Digest]map[chan struct{}]struct{}
+	publications          map[*publicationSubscription]struct{}
 }
 
 func NewStore(root string, limit int64) (_ *Store, err error) {
@@ -54,14 +54,13 @@ func NewStore(root string, limit int64) (_ *Store, err error) {
 	const format = "bushel-cas-v1\n"
 	marker, markerErr := readBounded(filepath.Join(root, "format"), 32)
 	if errors.Is(markerErr, ErrNotFound) {
-		entries, e := os.ReadDir(root)
-		if e != nil {
-			return nil, e
-		}
-		for _, entry := range entries {
+		if e := walkDirectoryEntries(context.Background(), root, func(entry os.DirEntry) error {
 			if entry.Name() != "store.lock" {
-				return nil, fmt.Errorf("%w: state directory is not an empty Bushel store", ErrInvalid)
+				return fmt.Errorf("%w: state directory is not an empty Bushel store", ErrInvalid)
 			}
+			return nil
+		}); e != nil {
+			return nil, e
 		}
 		if e := writeSynced(filepath.Join(root, "format"), []byte(format)); e != nil {
 			return nil, e
@@ -79,19 +78,16 @@ func NewStore(root string, limit int64) (_ *Store, err error) {
 		}
 	}
 	for _, dir := range []string{"chunks", "manifests"} {
-		err = filepath.WalkDir(filepath.Join(root, dir), func(path string, e fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
-			if e.IsDir() {
-				return nil
-			}
+		err = walkDirectoryEntries(context.Background(), filepath.Join(root, dir), func(e os.DirEntry) error {
 			if !e.Type().IsRegular() {
-				return errors.New("non-regular file in CAS")
+				return errors.New("non-regular entry in flat CAS directory")
 			}
 			info, eErr := e.Info()
 			if eErr != nil {
 				return eErr
+			}
+			if !info.Mode().IsRegular() {
+				return errors.New("non-regular entry in flat CAS directory")
 			}
 			s.used += info.Size()
 			return nil
@@ -282,6 +278,7 @@ func (s *Store) put(ctx context.Context, d Digest, r io.Reader, expected *Manife
 		close(ch)
 	}
 	delete(s.watchers, d)
+	s.publishLocked(d)
 	return nil
 }
 

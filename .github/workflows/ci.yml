@@ -30,6 +30,7 @@ jobs:
           cache-save: ${{ github.event_name != 'pull_request' }}
       - run: bazel test //...
       - run: bazel build //cmd/bushel
+      - run: bazel run //cmd/bushel -- -help
       - run: bazel run @rules_go//go -- vet ./...
       - run: bazel run @rules_go//go -- -C benchmarks/digests test ./...
   race:
@@ -53,6 +54,7 @@ jobs:
             'internal/cas FuzzParseManifest' \
             'internal/cas FuzzParseDigest' \
             'internal/cas FuzzChunkSegmentation' \
+            'internal/cas FuzzCatalogDigest' \
             'internal/reapi FuzzParseResource' \
             'internal/reapi FuzzUploadTransition'; do
             read -r package fuzz <<< "$target"

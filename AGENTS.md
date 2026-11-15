@@ -7,6 +7,10 @@ bazel test //...
 bazel run @rules_go//go -- vet ./...
 ```
 
+Use `bazel run //cmd/bushel -- ...` to launch the daemon. The checked-in
+`run --run_in_cwd` preserves the invocation directory for relative data paths.
+Use Bazel targets for local execution; do not invoke build-output paths directly.
+
 Use Bazelisk to respect `.bazelversion`; `MODULE.bazel` pins the Go SDK and rules.
 Windows needs Git Bash available to Bazel (`BAZEL_SH` can select it).
 Run `bazel test --config=race //...` on Linux for concurrency changes.
@@ -31,6 +35,8 @@ Before pushing each commit, request reviews from the persistent Go style,
 performance/benchmarking, distributed systems, and security reviewer sessions.
 Resolve blocking findings before publishing. Preserve v1 wire compatibility;
 changes to chunking parameters require a new protocol version.
+After all four reviews and required CI checks pass, agents may merge their own
+PRs. Preserve the logically independent commits when merging.
 
 Never commit machine-specific absolute paths, identifying host details, secrets,
 or private keys. Use paths relative to the checkout root in committed files.

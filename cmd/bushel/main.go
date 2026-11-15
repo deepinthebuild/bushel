@@ -31,11 +31,12 @@ func (v *values) String() string     { return strings.Join(*v, ",") }
 func (v *values) Set(s string) error { *v = append(*v, s); return nil }
 
 type config struct {
-	data, grpc, instance     string
-	listen, peers, bootstrap values
-	discovery                bool
-	disk                     int64
-	timeout                  time.Duration
+	data, grpc, instance           string
+	listen, peers, bootstrap       values
+	discovery                      bool
+	disk                           int64
+	timeout                        time.Duration
+	routingRecords, routingPerPeer int
 }
 
 func parse(args []string) (config, error) {
@@ -50,6 +51,8 @@ func parse(args []string) (config, error) {
 	fs.BoolVar(&c.discovery, "discovery", true, "discover peers using the public IPFS rendezvous")
 	fs.Int64Var(&c.disk, "disk-bytes", 20<<30, "storage/staging budget; an equal budget is reserved for read scratch")
 	fs.DurationVar(&c.timeout, "request-timeout", 30*time.Second, "maximum peer request duration")
+	fs.IntVar(&c.routingRecords, "routing-records", 32768, "maximum cached blob-provider pairs")
+	fs.IntVar(&c.routingPerPeer, "routing-records-per-peer", 0, "maximum cached pairs per provider (0: up to 16384 within total limit)")
 	if err := fs.Parse(args); err != nil {
 		return c, err
 	}
@@ -58,6 +61,9 @@ func parse(args []string) (config, error) {
 	}
 	if c.data == "" || c.disk < 1<<20 || c.timeout <= 0 {
 		return c, errors.New("invalid state directory, disk budget, or timeout")
+	}
+	if c.routingRecords < 64 || c.routingRecords > 1<<20 || c.routingPerPeer < 0 || c.routingPerPeer > c.routingRecords {
+		return c, errors.New("invalid routing index capacity")
 	}
 	if len(c.listen) == 0 {
 		c.listen = values{"/ip4/0.0.0.0/tcp/8981"}
@@ -213,7 +219,8 @@ func run(ctx context.Context, c config) error {
 	if err != nil {
 		return err
 	}
-	network, err := p2p.New(ctx, p2p.Config{Store: store, PrivateKey: key, Listen: c.listen, Peers: peers, Bootstrap: bootstrap, Discovery: c.discovery, RequestTimeout: c.timeout, MaxPeers: 32})
+	network, err := p2p.New(ctx, p2p.Config{Store: store, PrivateKey: key, Listen: c.listen, Peers: peers, Bootstrap: bootstrap, Discovery: c.discovery, RequestTimeout: c.timeout, MaxPeers: 64,
+		RoutingRecords: c.routingRecords, RoutingRecordsPerPeer: c.routingPerPeer})
 	if err != nil {
 		return err
 	}

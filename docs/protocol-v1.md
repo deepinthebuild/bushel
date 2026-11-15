@@ -43,17 +43,19 @@ Bitswap provider finder is a no-op and never holds a public DHT reference.
 Manifests are served directly; chunk availability is advertised only through
 Bitswap HAVE/DONT_HAVE responses on the content host.
 
-Initial limits: 32 content connections by default (configurable to 128), 64
+Initial limits: 64 content connections by default (configurable from 8 to 128), 64
 discovery connections, 16 concurrent manifest handlers, four blob fetches, and
 eight chunks per fetch window. Discovery permits one connection per peer and
 prunes unprotected connections above a total of 48 toward eight, in addition to
 the DHT's maximum 40 protected routing peers. This leaves at least 16 connection
-slots of headroom after pruning. Manifest lookups use four workers and at
-most a five-second deadline each; other requests/windows have a 30-second
+slots of headroom after pruning. Manifest lookups use four direct workers and
+two provider-referral workers with at most a five-second deadline each;
+other requests/windows have a 30-second
 default deadline. A complete fetch has a five-minute ceiling. Local disk/quota
 errors are returned directly; only peer failures allow trying another manifest.
 Successful rendezvous
 provides renew every 12 hours; failures retry no sooner than 15 minutes. Peer
 discovery and explicit-peer reconnect attempts run at most once per five minutes.
-Only connected peers are queried for manifests; a miss is not proof of global
-absence. Cached chunks and full blobs are reverified before acceptance.
+The [Bushel provider DHT](routing-v1.md) extends lookup beyond connected peers
+without changing these manifest or Bitswap formats. A miss is not proof of
+global absence. Cached chunks and full blobs are reverified before acceptance.

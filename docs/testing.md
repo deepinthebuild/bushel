@@ -20,6 +20,10 @@ Properties check independent invariants and models:
   and reopen against an in-memory model. Failed writes cannot publish or notify.
 - Peer imports independently verify chunk digests, the whole-blob digest, and
   canonical cuts. Concurrent writers and quota failures preserve publication.
+- Announcement histories exercise overflow recovery, retries, restarts, offline
+  pauses, and fair catalog progress. Virtual time covers deadlines and shutdown.
+- Provider-store models exercise atomic batches, eviction, snapshots, cancellation,
+  and global, per-key, per-provider, and pending-memory bounds.
 
 Rapid shrinks both generated values and action histories. Store cases receive
 fresh explicit temporary directories, removed after each case, including each
@@ -37,6 +41,6 @@ sanitized source regression or fuzz seed; do not commit generated Rapid reports,
 which can contain local paths and runtime details.
 
 Fuzz targets are `FuzzParseDigest`, `FuzzParseManifest`, and
-`FuzzChunkSegmentation` in `internal/cas`, plus `FuzzParseResource` and
+`FuzzChunkSegmentation` and `FuzzCatalogDigest` in `internal/cas`, plus `FuzzParseResource` and
 `FuzzUploadTransition` in `internal/reapi`. Use an exact target expression and
 `-run '^$'` for timed fuzzing so each target does not repeat the property suite.
