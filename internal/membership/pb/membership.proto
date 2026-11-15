@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package bushel.membership.v1;
+
+option go_package = "github.com/deepinthebuild/bushel/internal/membership/pb;membershippb";
+
+enum KeyAlgorithm {
+  KEY_ALGORITHM_UNSPECIFIED = 0;
+  // Interpret the first eight bytes of SHA256(ASCII "bushel:blob-have:" ||
+  // digest SHA-256 bytes || uint64 big-endian size) as a big-endian uint64.
+  KEY_ALGORITHM_SHA256_SIZE64BE_PREFIX64 = 1;
+}
+
+message Digest {
+  bytes sha256 = 1; // Raw 32-byte SHA-256 digest.
+  uint64 size_bytes = 2;
+}
+
+message Request {
+  // SHA-256 of the last complete canonical Snapshot payload held by the caller.
+  // Empty requests a full response; otherwise exactly 32 bytes.
+  bytes known_snapshot_sha256 = 1;
+}
+
+// The segment mask and segment-count length are derived from these fields.
+// Receivers bound protobuf allocations, then validate geometry before queries.
+message BinaryFuse8 {
+  fixed64 seed = 1;
+  uint32 segment_length = 2;
+  uint32 segment_count = 3;
+  bytes fingerprints = 4; // Immutable array of 8-bit fingerprints.
+}
+
+message Snapshot {
+  bytes session_id = 1; // Random 16-byte session identifier.
+  uint64 generation = 2;
+  uint64 snapshot_sequence = 3;
+  uint64 sequence = 4;
+  bool complete = 5;
+  KeyAlgorithm key_algorithm = 6;
+  uint32 key_count = 7;
+  BinaryFuse8 filter = 8;
+  // Atomic full addition tail after snapshot_sequence through sequence.
+  repeated Digest additions = 9;
+}

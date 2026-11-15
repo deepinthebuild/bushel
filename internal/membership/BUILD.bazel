@@ -1,0 +1,35 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "membership",
+    srcs = [
+        "filter.go",
+        "wire.go",
+    ],
+    importpath = "github.com/deepinthebuild/bushel/internal/membership",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/cas",
+        "//internal/membership/pb",
+        "@com_github_fastfilter_xorfilter//:xorfilter",
+        "@org_golang_google_protobuf//encoding/protowire",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_test(
+    name = "membership_test",
+    srcs = [
+        "benchmark_test.go",
+        "filter_test.go",
+        "state_test.go",
+    ],
+    embed = [":membership"],
+    deps = [
+        "//internal/cas",
+        "//internal/membership/pb",
+        "@net_pgregory_rapid//:rapid",
+        "@org_golang_google_protobuf//encoding/protowire",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

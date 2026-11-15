@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "nogo")
 
 # gazelle:prefix github.com/deepinthebuild/bushel
 # gazelle:proto disable_global
+# gazelle:resolve go github.com/deepinthebuild/bushel/internal/membership/pb //internal/membership/pb
 # gazelle:resolve go github.com/deepinthebuild/bushel/internal/publication/pb //internal/publication/pb
 # gazelle:exclude benchmarks
 # gazelle:exclude bin

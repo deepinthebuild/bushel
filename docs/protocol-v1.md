@@ -3,6 +3,8 @@
 Integers are unsigned big-endian. SHA-256 values are 32 raw bytes. No native Go
 serialization appears on the wire. Before the first stable release, incompatible
 changes may reuse these protocol IDs. The stable release will freeze this contract.
+The [membership protocol](membership.md) uses typed protobuf for compact HAVE
+summaries on the content host; the framing below remains unchanged.
 
 RepMaxCDC: Buildbarn's `NewRepMaxContentDefinedChunker`,
 `FastContentDefinedChunkerGearTable` from go-cdc v0.0.10,

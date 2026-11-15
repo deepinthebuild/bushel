@@ -29,6 +29,9 @@ Properties check independent invariants and models:
   pauses, and fair catalog progress. Virtual time covers deadlines and shutdown.
 - Provider-store models exercise atomic batches, eviction, snapshots, cancellation,
   and global, per-key, per-provider, and pending-memory bounds.
+- Membership histories exercise full-tail replacement, restart and reordered
+  views, additions during rebuilds, overflow and ordinary stale-positive misses.
+  Filter properties require every captured identity to survive wire round trips.
 - Federation histories exercise workspace inference, reordered upload observations,
   two distinct peer receipts, aging under small-blob retries, restart accounting,
   journal corruption, and source-only seed transfer allowances.
@@ -53,6 +56,8 @@ Fuzz targets include `FuzzParseDigest`, `FuzzParseManifest`,
 `FuzzUploadTransition` in `internal/reapi`. Use an exact target expression and
 `-run '^$'` for timed fuzzing so each target does not repeat the property suite.
 `internal/p2p` also fuzzes `FuzzSizedCIDCanonicalRoundTrip`.
+`internal/membership` fuzzes bounded protobuf decoding and filter query safety
+with `FuzzMembershipSnapshot` and `FuzzMembershipRequest`.
 Federation adds `FuzzSeedOfferParsing`, `FuzzMetadataAndLabel`,
 `FuzzPublicationSnapshot`, and `FuzzPublicationJournal`; CI runs bounded fuzzing
 alongside the normal properties and Linux race tests.
