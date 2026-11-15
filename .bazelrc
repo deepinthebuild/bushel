@@ -1,4 +1,7 @@
 common --enable_bzlmod
+common --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
+common --repo_env=BAZEL_NO_APPLE_CPP_TOOLCHAIN=1
+common --repo_env=BAZEL_MACOS_USE_HOST_SDK=0
 build --incompatible_strict_action_env
 build --stamp=false
 build --@rules_go//go/config:pure

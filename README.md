@@ -99,6 +99,12 @@ six amd64/arm64 OS targets. For example:
 bazel build --platforms=@rules_go//go/toolchain:linux_arm64 //cmd/bushel
 ```
 
+Ordinary builds use Go's pure mode. The Linux race tests enable cgo and use
+the pinned [hermetic-llvm](https://github.com/hermeticbuild/hermetic-llvm)
+toolchain. Native C/C++ dependencies must use this toolchain too; host compiler
+autodetection is disabled.
+SDK commands through `bazel run @rules_go//go` default to pure mode as well.
+
 After changing Go sources or dependencies, run `bazel mod tidy` and
 `bazel run //:gazelle`, then commit the generated BUILD files and module lock.
 `go.mod` and `go.sum` remain the Go dependency source of truth. See
